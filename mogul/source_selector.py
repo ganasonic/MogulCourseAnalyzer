@@ -46,6 +46,12 @@ class VideoSourceSelector(QDialog):
         form.addRow(self.refresh)
         form.addRow(QLabel('指定モードが機器に対応している必要があります。\n開始後にライブプレビューで入力状態を確認できます。'))
         self.tabs.addTab(camera_tab, 'UVCライブ映像')
+        orientation_form = QFormLayout()
+        self.rotation = QComboBox()
+        for label,value in [('回転なし（横長・縦長）',0),('右へ90°（横倒し撮影）',90),('180°',180),('左へ90°（横倒し撮影）',270)]:
+            self.rotation.addItem(label,value)
+        orientation_form.addRow('入力後の表示回転',self.rotation)
+        layout.addLayout(orientation_form)
         self.message = QLabel('')
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
@@ -93,6 +99,7 @@ class VideoSourceSelector(QDialog):
                 return
             width, height = map(int, self.resolution.currentText().split(' × '))
             self.spec = {'kind': 'uvc', 'device': device, 'width': width, 'height': height, 'fps': int(self.fps.currentText())}
+        self.spec['rotation'] = self.rotation.currentData()
         self.accept()
 
     def done(self, result):

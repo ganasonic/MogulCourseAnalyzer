@@ -30,6 +30,7 @@ class Calibration:
     source: dict = field(default_factory=dict)
     start_ms: float = 0
     mirrored: bool = False
+    rotation: int = 0  # clockwise, applied after decoder metadata orientation
     control_gates: list[ControlGate] = field(default_factory=list)
     bumps: list[Bump] = field(default_factory=list)
     gates_confirmed: bool = False
@@ -132,6 +133,8 @@ class Calibration:
         data['control_gates'] = [ControlGate(**x) for x in data.get('control_gates', [])]
         data['bumps'] = [Bump(**x) for x in data.get('bumps', [])]
         result = cls(**data)
+        if type(result.rotation) is not int or result.rotation not in (0,90,180,270):
+            raise ValueError('保存された回転角が不正です')
         if result.middle and not valid_quad(result.middle):
             raise ValueError('保存されたミドルパートが不正です')
         if result.middle_confirmed and not result.middle:

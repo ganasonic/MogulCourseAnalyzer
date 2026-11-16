@@ -1,7 +1,7 @@
 """Interactive overlays: click confirmation is deferred to distinguish double clicks."""
 import math
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsScene, QGraphicsView
 from .geometry import contains, valid_quad
@@ -31,12 +31,14 @@ class CalibrationView(QGraphicsView):
     notice = Signal(str)
     landmark_selected = Signal(str, str)
     landmark_add_requested = Signal(str, object)
+    zoom_changed = Signal(float)
 
     def __init__(self, workflow, parent=None):
         super().__init__(parent)
         self.workflow = workflow
         self.setScene(QGraphicsScene(self))
         self.image_item = self.scene().addPixmap(QPixmap())
+        self.image_item.setTransformationMode(Qt.SmoothTransformation)
         self.image_item.setZValue(-10)
         self.overlays = []
         self.handles = []
@@ -51,6 +53,17 @@ class CalibrationView(QGraphicsView):
         self.pending_bump_polygon = None
         self.drag = None
         self.press = None
+        self.zoom_factor = 1.0
+        self.base_scale = 1.0
+        self.panning = False
+        self.space_pressed = False
+        self.pan_position = None
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.NoAnchor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip('ホイール: 拡大・縮小 / 中ボタンまたはSpace+左ドラッグ: 表示位置を移動')
         self.suppress_release = False
         self.click_timer = QTimer(self)
         self.click_timer.setSingleShot(True)
@@ -73,7 +86,7 @@ class CalibrationView(QGraphicsView):
         qimage = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format_RGB888).copy()
         self.image_item.setPixmap(QPixmap.fromImage(qimage))
         if not self.has_frame or resized:
-            self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
+            self.fit_all()
             self.redraw()
         self.has_frame = True
 
@@ -81,10 +94,86 @@ class CalibrationView(QGraphicsView):
         self.click_timer.stop()
         self.has_frame = False
         self.image_item.setPixmap(QPixmap())
+        self.drag = None
+        self.panning = self.space_pressed = False
+        self.fit_all()
 
     def resizeEvent(self, event):
+        center = self.mapToScene(self.viewport().rect().center())
         super().resizeEvent(event)
+        self._refit(center)
+
+    def _refit(self, center=None):
+        self.resetTransform()
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
+        self.base_scale = self.transform().m11()
+        self.scale(self.zoom_factor,self.zoom_factor)
+        if center is not None and self.zoom_factor > 1:
+            self.centerOn(center)
+
+    def fit_all(self):
+        self.zoom_factor = 1.0
+        self._refit()
+        self.zoom_changed.emit(self.zoom_factor)
+
+    def set_zoom(self,factor,anchor=None):
+        if self.drag is not None:
+            return
+        factor = max(1.0,min(32.0,float(factor)))
+        if anchor is None:
+            anchor = self.viewport().rect().center()
+        before = self.mapToScene(anchor)
+        self.scale(factor/self.zoom_factor,factor/self.zoom_factor)
+        self.zoom_factor = factor
+        after = self.mapToScene(anchor)
+        center = self.mapToScene(self.viewport().rect().center())
+        self.centerOn(center+before-after)
+        self.zoom_changed.emit(self.zoom_factor)
+
+    def focus_middle(self):
+        points = self.calibration.middle
+        if not points:
+            self.notice.emit('ミドルパートを指定してから拡大できます。ホイールで先に拡大して設定することもできます。')
+            return
+        self.click_timer.stop()
+        self.fit_all()
+        xs = [p[0]*self.width_px for p in points]
+        ys = [p[1]*self.height_px for p in points]
+        rect = QRectF(min(xs),min(ys),max(xs)-min(xs),max(ys)-min(ys))
+        rect = rect.adjusted(-rect.width()*.08,-rect.height()*.08,rect.width()*.08,rect.height()*.08)
+        self.fitInView(rect,Qt.KeepAspectRatio)
+        factor = self.transform().m11()/self.base_scale
+        self.zoom_factor = max(1,min(32,factor))
+        self._refit(rect.center())
+        self.zoom_changed.emit(self.zoom_factor)
+
+    def wheelEvent(self,event):
+        self.click_timer.stop()
+        if self.has_frame and event.angleDelta().y():
+            self.set_zoom(self.zoom_factor*1.2**(event.angleDelta().y()/120),event.position().toPoint())
+        event.accept()
+
+    def keyPressEvent(self,event):
+        if event.key() == Qt.Key_Space:
+            self.space_pressed = True
+            self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self,event):
+        if event.key() == Qt.Key_Space:
+            self.space_pressed = False
+            if not self.panning:
+                self.unsetCursor()
+            event.accept()
+        else:
+            super().keyReleaseEvent(event)
+
+    def focusOutEvent(self,event):
+        self.space_pressed = self.panning = False
+        self.unsetCursor()
+        super().focusOutEvent(event)
 
     def set_mode(self, mode, lane=0):
         self.click_timer.stop()
@@ -195,6 +284,13 @@ class CalibrationView(QGraphicsView):
         return np.clip(point, 0, 1).tolist() if clamp else point
 
     def mousePressEvent(self, event):
+        if self.has_frame and (event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and self.space_pressed)):
+            self.click_timer.stop()
+            self.panning = True
+            self.pan_position = event.position()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         if event.button() != Qt.LeftButton or not self.has_frame:
             return super().mousePressEvent(event)
         self.click_timer.stop()
@@ -236,6 +332,13 @@ class CalibrationView(QGraphicsView):
             self.suppress_release = True
 
     def mouseMoveEvent(self, event):
+        if self.panning:
+            delta = event.position()-self.pan_position
+            self.pan_position = event.position()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value()-round(delta.x()))
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value()-round(delta.y()))
+            event.accept()
+            return
         if self.drag:
             point = self.normalized_position(event)
             kind, value = self.drag
@@ -266,6 +369,12 @@ class CalibrationView(QGraphicsView):
             self.redraw()
 
     def mouseReleaseEvent(self, event):
+        if self.panning:
+            self.panning = False
+            self.setCursor(Qt.OpenHandCursor if self.space_pressed else Qt.ArrowCursor)
+            self.press = None
+            event.accept()
+            return
         was_drag = self.drag is not None
         if self.drag and self.drag[0] == 'bump_rectangle' and self.pending_bump_polygon:
             polygon = self.pending_bump_polygon
@@ -301,6 +410,9 @@ class CalibrationView(QGraphicsView):
         self.changed.emit()
 
     def mouseDoubleClickEvent(self, event):
+        if self.space_pressed or self.panning:
+            event.accept()
+            return
         self.click_timer.stop()
         self.suppress_release = True
         self.drag = None

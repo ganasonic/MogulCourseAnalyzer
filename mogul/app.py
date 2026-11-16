@@ -19,6 +19,7 @@ from .workflow import AnalysisController, CalibrationWorkflow
 from .landmarks import layout_ready
 from .landmark_panel import LandmarkPanel
 from .course_map import CourseMap
+from .orientation import oriented_frame, rotate_calibration
 
 
 def timecode(ms):
@@ -97,6 +98,22 @@ class MainWindow(QMainWindow):
         self.view = CalibrationView(self.workflow)
         self.view.changed.connect(self.calibration_changed)
         self.view.notice.connect(lambda text: self.notice.setText(text))
+        display_controls = QHBoxLayout()
+        display_controls.addWidget(QLabel('表示回転'))
+        self.rotation = QComboBox()
+        for label,value in [('なし',0),('右90°',90),('180°',180),('左90°',270)]:
+            self.rotation.addItem(label,value)
+        self.rotation.currentIndexChanged.connect(self.change_rotation)
+        display_controls.addWidget(self.rotation)
+        self._button('－',lambda:self.view.set_zoom(self.view.zoom_factor/1.25),display_controls)
+        self._button('＋',lambda:self.view.set_zoom(self.view.zoom_factor*1.25),display_controls)
+        self._button('全体表示',self.view.fit_all,display_controls)
+        self._button('ミドルを拡大',self.view.focus_middle,display_controls)
+        self.zoom_label = QLabel('全体比 100%')
+        self.view.zoom_changed.connect(lambda factor:self.zoom_label.setText(f'全体比 {factor*100:.0f}%'))
+        display_controls.addWidget(self.zoom_label)
+        display_controls.addStretch()
+        video_layout.addLayout(display_controls)
         video_layout.addWidget(self.view, 1)
         playback = QHBoxLayout()
         self.play_button = self._button('▶ 再生', self.toggle_play, playback)
@@ -263,6 +280,7 @@ class MainWindow(QMainWindow):
         self.source_ok = False
         self.metadata = {}
         self.frames.clear()
+        self.last_sample = 0
         self.current_frame = None
         self.playing = False
         self.play_button.setText('▶ 再生')
@@ -270,7 +288,7 @@ class MainWindow(QMainWindow):
         self.record_button.setText('● MP4録画')
         self.view.clear_frame()
         if reset:
-            self.workflow.calibration = Calibration(source=spec)
+            self.workflow.calibration = Calibration(source=spec,rotation=spec.get('rotation',0))
             self.workflow.history.clear()
             self.workflow.journal.clear()
             self.session_id = None
@@ -310,8 +328,9 @@ class MainWindow(QMainWindow):
         was_healthy = self.source_ok
         self.current_frame = frame
         self.source_ok = True
-        image = frame.image[:, ::-1].copy() if self.workflow.calibration.mirrored else frame.image
+        image = self.display_frame(frame.image)
         self.view.set_frame(image)
+        self.update_input_label()
         if time.monotonic()-self.last_sample > .5:
             self.frames.append(image.copy())
             self.last_sample = time.monotonic()
@@ -435,9 +454,7 @@ class MainWindow(QMainWindow):
     def detect_middle(self):
         if not self.source_ok or self.current_frame is None:
             return
-        image = self.current_frame.image
-        if self.workflow.calibration.mirrored:
-            image = image[:, ::-1].copy()
+        image = self.display_frame(self.current_frame.image)
         frames = list(self.frames) if self.metadata.get('live') else [image]
         result = MiddlePartDetector().detect(frames)
         self.workflow.checkpoint()
@@ -511,6 +528,34 @@ class MainWindow(QMainWindow):
             self.workflow.calibration.start_ms = value*1000
             self.refresh_state()
 
+    def display_frame(self,image):
+        c = self.workflow.calibration
+        return oriented_frame(image,c.rotation,c.mirrored)
+
+    def update_input_label(self):
+        if self.metadata:
+            m = self.metadata
+            name = 'UVCライブ' if m.get('live') else Path(m.get('path','')).name
+            self.input_label.setText(f'{name}  |  入力 {m["width"]} × {m["height"]}  →  表示 {self.view.width_px} × {self.view.height_px}  |  {m["fps"]:g} fps')
+
+    def change_rotation(self):
+        if self.loading:
+            return
+        rotation = self.rotation.currentData()
+        if rotation == self.workflow.calibration.rotation:
+            return
+        self.view.click_timer.stop()
+        self.view.drag = None
+        self.workflow.checkpoint()
+        rotate_calibration(self.workflow.calibration,rotation)
+        self.frames.clear()
+        self.last_sample = 0
+        if self.current_frame:
+            self.on_frame(self.current_frame)
+        self.view.fit_all()
+        self.notice.setText('回転後の映像を設定・候補検出に使用します。既存の領域・ゲート・コブの座標も一緒に回転しました。')
+        self.refresh()
+
     def change_mirror(self, checked):
         if not self.loading:
             self.workflow.checkpoint()
@@ -552,6 +597,7 @@ class MainWindow(QMainWindow):
         c = self.workflow.calibration
         self.opacity.setValue(round(c.opacity*100))
         self.mirror.setChecked(c.mirrored)
+        self.rotation.setCurrentIndex(self.rotation.findData(c.rotation))
         self.start_time.setValue(c.start_ms/1000)
         self.lane_count.setValue(len(c.lanes) or 2)
         self.loading = False
@@ -559,7 +605,11 @@ class MainWindow(QMainWindow):
     def undo(self):
         self.view.click_timer.stop()
         self.view.drag = None
+        previous_orientation = (self.workflow.calibration.rotation,self.workflow.calibration.mirrored)
         if self.workflow.undo():
+            if previous_orientation != (self.workflow.calibration.rotation,self.workflow.calibration.mirrored):
+                self.frames.clear()
+                self.last_sample = 0
             if not self.workflow.calibration.lanes:
                 self.view.set_mode('middle')
             self.sync_settings()

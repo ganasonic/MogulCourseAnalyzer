@@ -46,13 +46,18 @@ class FileVideoSource(VideoSource):
         if not self.capture.isOpened():
             self.capture.release()
             raise ValueError('動画を開けません。パス・コーデックを確認してください')
+        # Smartphone display metadata is decoded first; manual rotation is an
+        # additional correction, never inferred from landscape/portrait alone.
+        self.capture.set(cv2.CAP_PROP_ORIENTATION_AUTO,1)
         fps = self.capture.get(cv2.CAP_PROP_FPS)
         self.fps = fps if np.isfinite(fps) and fps > 0 else 30.0
         self.count = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.metadata = {'kind': 'file', 'path': self.path, 'fps': self.fps,
                          'width': int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
                          'height': int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                         'duration_ms': self.count / self.fps * 1000, 'live': False}
+                         'duration_ms': self.count / self.fps * 1000, 'live': False,
+                         'metadata_rotation': self.capture.get(cv2.CAP_PROP_ORIENTATION_META),
+                         'orientation_auto': bool(self.capture.get(cv2.CAP_PROP_ORIENTATION_AUTO))}
         try:
             result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
                 '-show_entries', 'stream=duration:format=duration', '-of', 'json', self.path],

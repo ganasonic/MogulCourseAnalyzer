@@ -302,7 +302,7 @@ def test_disconnect_reconnect_simulated(qtbot):
     try:
         worker.command('open', {'kind':'uvc','device':'simulated'})
         qtbot.waitUntil(lambda: any(not healthy for _, healthy in statuses), timeout=2000)
-        qtbot.waitUntil(lambda: bool(frames), timeout=7000)
+        qtbot.waitUntil(lambda: bool(frames) and any(healthy for _, healthy in statuses), timeout=7000)
         assert len(calls) >= 2 and any(healthy for _, healthy in statuses)
     finally:
         worker.requestInterruption()

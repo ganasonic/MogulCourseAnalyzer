@@ -251,7 +251,7 @@ class LandmarkPanel(QScrollArea):
             frames = list(self.window.frames)
         else:
             frame = self.window.current_frame.image
-            frames = [frame[:,::-1].copy() if self.c.mirrored else frame.copy()]
+            frames = [self.window.display_frame(frame).copy()]
         self.snapshot = self.c.to_dict()
         self.request_id = self.window.request_id
         self.task = GateDetectionTask(frames,deepcopy(self.c),self)
