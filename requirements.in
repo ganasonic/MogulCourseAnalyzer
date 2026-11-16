@@ -1,0 +1,9 @@
+# Phase 1 runtime and development dependencies.
+# requirements.txt captures the exact verified environment, including transitive dependencies.
+PySide6
+opencv-python
+numpy
+pandas
+openpyxl
+pytest
+pytest-qt
