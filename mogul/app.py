@@ -1,4 +1,4 @@
-"""Japanese Phase 1 desktop workflow. UI delegates capture, geometry and persistence."""
+"""Japanese calibration workflow. UI delegates capture, geometry and persistence."""
 from collections import deque
 from pathlib import Path
 import time
@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget)
+    QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget, QTabWidget)
 
 from .detectors import LaneDetector, MiddlePartDetector
 from .editor import CalibrationView
@@ -16,6 +16,9 @@ from .repository import EventRepository
 from .source_selector import VideoSourceSelector
 from .video import VideoWorker
 from .workflow import AnalysisController, CalibrationWorkflow
+from .landmarks import layout_ready
+from .landmark_panel import LandmarkPanel
+from .course_map import CourseMap
 
 
 def timecode(ms):
@@ -44,6 +47,7 @@ class MainWindow(QMainWindow):
         self.auto_detect_pending = False
         self.request_id = 0
         self.loading = False
+        self.closing = False
         self.worker = VideoWorker(self)
         self._build()
         self.worker.frame_ready.connect(self.on_frame)
@@ -73,7 +77,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet('font-size: 20px; font-weight: 700; color: #8ed7ed;')
         header.addWidget(title)
         header.addStretch()
-        header.addWidget(QLabel('v1.8  •  Phase 1'))
+        header.addWidget(QLabel('v1.8  •  Phase 2'))
         root.addLayout(header)
         actions = QHBoxLayout()
         self._button('映像ソースを変更…', self.select_source, actions)
@@ -116,7 +120,7 @@ class MainWindow(QMainWindow):
         self.record_label = QLabel('UVC入力で録画できます')
         recording.addWidget(self.record_label, 1)
         video_layout.addLayout(recording)
-        self.notice = QLabel('① ミドルパートを設定 → ② 各レーンを補正・確定 → 保存')
+        self.notice = QLabel('① ミドルパート → ② 全レーン確定 → ③ ゲート・コブ設定 → 保存')
         self.notice.setWordWrap(True)
         self.notice.setMinimumHeight(46)
         video_layout.addWidget(self.notice)
@@ -188,14 +192,23 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(panel)
         scroll.setMinimumWidth(325)
-        splitter.addWidget(scroll)
+        self.right_tabs = QTabWidget()
+        self.right_tabs.addTab(scroll,'領域設定')
+        self.course_map = CourseMap(self)
+        self.landmarks_panel = LandmarkPanel(self)
+        self.right_tabs.addTab(self.landmarks_panel,'ゲート・コブ')
+        self.right_tabs.addTab(self.course_map,'コースマップ')
+        self.course_map.selected.connect(self.landmarks_panel.select_record)
+        self.right_tabs.currentChanged.connect(self.right_tab_changed)
+        splitter.addWidget(self.right_tabs)
         splitter.setSizes([1000, 345])
         root.addWidget(splitter, 1)
         footer = QHBoxLayout()
         self.prerequisites = QLabel('')
         self.prerequisites.setWordWrap(True)
         footer.addWidget(self.prerequisites, 1)
-        self.analyze_button = QPushButton('分析開始')
+        self.analyze_button = QPushButton('解析準備を保存')
+        self.analyze_button.setToolTip('位置設定を保存します。人物検出・人数解析はPhase 3で追加します。')
         self.analyze_button.clicked.connect(self.start_analysis)
         footer.addWidget(self.analyze_button)
         root.addLayout(footer)
@@ -216,6 +229,11 @@ class MainWindow(QMainWindow):
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: #222f40; border: 1px solid #4c6077; padding: 5px; }
             QScrollArea { border: none; background: #18212d; }
             QScrollArea > QWidget > QWidget { background: #18212d; }
+            QTabWidget::pane { background: #18212d; border: 1px solid #3c4c60; }
+            QTabBar::tab { background: #293b50; color: #e6edf4; padding: 8px; }
+            QTabBar::tab:selected { background: #3b5670; }
+            QListWidget { background: #222f40; color: #e6edf4; border: 1px solid #4c6077; }
+            QListWidget::item:selected { background: #3b5670; }
             QMessageBox { background: #263446; }
         ''')
 
@@ -258,6 +276,9 @@ class MainWindow(QMainWindow):
             self.session_id = None
             self.workflow.dirty = True
             self.view.set_mode('middle')
+            self.landmarks_panel.selected = None
+            self.view.selected_landmark = None
+            self.right_tabs.setCurrentIndex(0)
             self.sync_settings()
         self.auto_detect_pending = not bool(self.workflow.calibration.middle)
         self.input_label.setText('映像ソースに接続中…')
@@ -401,7 +422,15 @@ class MainWindow(QMainWindow):
         self.lane_name.setEnabled(bool(c.lanes))
         self.start_time.setEnabled(not live)
         self.view.redraw()
+        self.landmarks_panel.refresh()
+        self.course_map.update_course(c,self.landmarks_panel.selected)
         self.refresh_state()
+
+    def right_tab_changed(self,index):
+        if index == 1:
+            self.landmarks_panel.arm_tool()
+        elif index == 0 and self.view.mode == 'landmarks':
+            self.view.set_mode('lane' if self.workflow.calibration.lanes else 'middle',max(0,self.lane_select.currentIndex()))
 
     def detect_middle(self):
         if not self.source_ok or self.current_frame is None:
@@ -494,6 +523,15 @@ class MainWindow(QMainWindow):
                 c.middle = [[1-c.middle[i][0], c.middle[i][1]] for i in (1, 0, 3, 2)]
                 c.middle_confirmed = False
                 c.clear_lanes()
+            for gate in c.control_gates:
+                gate.point = [1-gate.point[0],gate.point[1]]
+                if gate.candidate_point is not None:
+                    gate.candidate_point = [1-gate.candidate_point[0],gate.candidate_point[1]]
+                gate.side = 'RIGHT' if gate.side == 'LEFT' else 'LEFT'
+            for bump in c.bumps:
+                bump.center = [1-bump.center[0],bump.center[1]]
+                bump.polygon = [[1-p[0],p[1]] for p in reversed(bump.polygon)]
+            c.invalidate_landmarks()
             if self.current_frame:
                 self.on_frame(self.current_frame)
             self.notice.setText('反転を変更しました。領域・レーンの位置を再確認してください（Undo可）。')
@@ -520,6 +558,7 @@ class MainWindow(QMainWindow):
 
     def undo(self):
         self.view.click_timer.stop()
+        self.view.drag = None
         if self.workflow.undo():
             if not self.workflow.calibration.lanes:
                 self.view.set_mode('middle')
@@ -557,7 +596,10 @@ class MainWindow(QMainWindow):
             self.workflow.history.clear()
             self.workflow.journal.clear()
             self.workflow.dirty = False
-            self.view.set_mode('lane' if calibration.lanes else 'middle')
+            self.landmarks_panel.selected = None
+            self.view.selected_landmark = None
+            self.view.set_mode('landmarks' if calibration.control_gates or calibration.bumps else ('lane' if calibration.lanes else 'middle'))
+            self.right_tabs.setCurrentIndex(1 if calibration.control_gates or calibration.bumps else 0)
             self.sync_settings()
             self.notice.setText('保存済みの設定を復元しました。')
             if calibration.source:
@@ -572,15 +614,18 @@ class MainWindow(QMainWindow):
         if not self.controller.can_start(self.source_ok):
             self.notice.setText(' ／ '.join(self.workflow.reasons(self.source_ok)))
             return
-        # Phase 2 prerequisites cannot be confirmed in Phase 1.
-        self.notice.setText('解析エンジンはPhase 3以降で実装します。')
+        if self.save():
+            self.notice.setText('解析準備の位置設定を保存しました。人物検出・人数解析はPhase 3で追加します。')
 
     def closeEvent(self, event):
         if not self.maybe_save():
             event.ignore()
             return
+        self.closing = True
         self.worker.requestInterruption()
-        if not self.worker.wait(100):
+        if self.landmarks_panel.busy:
+            self.landmarks_panel.task.requestInterruption()
+        if not self.worker.wait(100) or self.landmarks_panel.busy:
             # Keep the Qt event loop responsive while a pending native read finishes.
             self.setEnabled(False)
             self.notice.setText('映像入力と録画を終了しています…')
@@ -592,7 +637,7 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def finish_close(self):
-        if not self.worker.isRunning():
+        if not self.worker.isRunning() and not self.landmarks_panel.busy:
             self.close_timer.stop()
             self.workflow.dirty = False
             self.close()

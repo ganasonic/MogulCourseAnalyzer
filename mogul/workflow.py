@@ -1,6 +1,7 @@
 """Undo, validation and analysis prerequisites."""
 from copy import deepcopy
 from .geometry import valid_quad
+from .landmarks import gate_errors, bump_errors
 
 
 class CalibrationWorkflow:
@@ -45,10 +46,10 @@ class CalibrationWorkflow:
             reasons.append('レーン数・位置が未設定です')
         elif not c.lanes_valid() or not all(x.confirmed for x in c.lanes):
             reasons.append('全レーンを確定してください')
-        if not c.gates_confirmed:
-            reasons.append('ゲート設定が未確認です（Phase 2）')
-        if not c.bumps_confirmed:
-            reasons.append('コブ位置設定が未確認です（Phase 2）')
+        if not c.gates_confirmed or gate_errors(c):
+            reasons.append('ゲート設定が未確認です')
+        if not c.bumps_confirmed or bump_errors(c):
+            reasons.append('コブ位置設定が未確認です')
         return reasons
 
 

@@ -7,7 +7,7 @@ from .app import MainWindow
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Mogul Course Analyzer v1.8 Phase 1')
+    parser = argparse.ArgumentParser(description='Mogul Course Analyzer v1.8 Phase 2')
     parser.add_argument('--video', help='起動時に読み込む動画')
     parser.add_argument('--database', default='data/calibration.sqlite')
     parser.add_argument('--smoke-seconds', type=float, default=0, help='起動確認用の自動終了秒数')

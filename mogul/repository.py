@@ -1,13 +1,16 @@
 """Transactional SQLite snapshots with retained edit history."""
 import json
 import sqlite3
+from contextlib import closing
+from pathlib import Path
+from dataclasses import asdict
 from datetime import datetime, timezone
 from uuid import uuid4
 from .models import Calibration
 
 
 class EventRepository:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path):
         self.path = path
@@ -22,27 +25,42 @@ class EventRepository:
         Calibration.from_dict(calibration.to_dict())
         now = datetime.now(timezone.utc).isoformat()
         session_id = session_id or str(uuid4())
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, self.SCHEMA_VERSION):
+            if version not in (0, 1, self.SCHEMA_VERSION):
                 raise ValueError('未対応のデータベース形式です')
-            db.executescript('''
+            if version == 1:
+                backup_path = Path(str(self.path) + '.v1.bak')
+                if not backup_path.exists():
+                    with closing(sqlite3.connect(backup_path)) as backup:
+                        db.backup(backup)
+            db.execute('BEGIN IMMEDIATE')
+            schema = '''
                 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, source_json TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS calibrations(id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), created_at TEXT NOT NULL, data_json TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS calibration_edits(id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), created_at TEXT NOT NULL, data_json TEXT NOT NULL);
-            ''')
+                CREATE TABLE IF NOT EXISTS control_gates(calibration_id INTEGER NOT NULL REFERENCES calibrations(id), id TEXT NOT NULL, data_json TEXT NOT NULL, PRIMARY KEY(calibration_id,id));
+                CREATE TABLE IF NOT EXISTS bumps(calibration_id INTEGER NOT NULL REFERENCES calibrations(id), id TEXT NOT NULL, data_json TEXT NOT NULL, PRIMARY KEY(calibration_id,id));
+            '''
+            for statement in schema.split(';'):
+                if statement.strip():
+                    db.execute(statement)
             db.execute(f'PRAGMA user_version={self.SCHEMA_VERSION}')
             db.execute('INSERT OR IGNORE INTO sessions VALUES(?,?,?)', (session_id, now, json.dumps(calibration.source, ensure_ascii=False)))
             db.execute('UPDATE sessions SET source_json=? WHERE id=?', (json.dumps(calibration.source, ensure_ascii=False), session_id))
-            db.execute('INSERT INTO calibrations(session_id,created_at,data_json) VALUES(?,?,?)',
-                       (session_id, now, json.dumps(calibration.to_dict(), ensure_ascii=False)))
+            cursor = db.execute('INSERT INTO calibrations(session_id,created_at,data_json) VALUES(?,?,?)',
+                                (session_id, now, json.dumps(calibration.to_dict(), ensure_ascii=False)))
+            calibration_id = cursor.lastrowid
+            for table, records in [('control_gates',calibration.control_gates),('bumps',calibration.bumps)]:
+                db.executemany(f'INSERT INTO {table}(calibration_id,id,data_json) VALUES(?,?,?)',
+                               [(calibration_id,item.id,json.dumps(asdict(item),ensure_ascii=False)) for item in records])
             db.executemany('INSERT INTO calibration_edits(session_id,created_at,data_json) VALUES(?,?,?)',
                            [(session_id, now, json.dumps(x.to_dict(), ensure_ascii=False)) for x in history])
         return session_id
 
     def load(self):
-        with self._connect() as db:
-            if db.execute('PRAGMA user_version').fetchone()[0] != self.SCHEMA_VERSION:
+        with closing(self._connect()) as db:
+            if db.execute('PRAGMA user_version').fetchone()[0] not in (1,self.SCHEMA_VERSION):
                 raise ValueError('未対応のデータベース形式です')
             row = db.execute('SELECT session_id,data_json FROM calibrations ORDER BY id DESC LIMIT 1').fetchone()
         if not row:

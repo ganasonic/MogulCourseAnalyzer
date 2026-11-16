@@ -187,7 +187,7 @@ def test_analysis_prerequisites(calibration):
     assert not controller.can_start(True)
     assert len(workflow.reasons(True)) == 2
     calibration.gates_confirmed = calibration.bumps_confirmed = True
-    assert controller.can_start(True)
+    assert not controller.can_start(True)  # flags alone cannot bypass actual registration
     assert not controller.can_start(False)
 
 
