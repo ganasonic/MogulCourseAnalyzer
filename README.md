@@ -1,73 +1,92 @@
-# MogulCourseAnalyzer
+# Mogul Course Analyzer v1.8
 
-## v1.8環境検証
+Windows 11 / Python / PySide6による日本語デスクトップアプリです。
+Phase 1（映像入力とエリア設定）を実装しています。人物追跡・人数集計・イベント解析は後続フェーズです。
 
-2026-11-16の差分・バージョン・テスト結果・未確認事項は[ENVIRONMENT_V18.md](ENVIRONMENT_V18.md)を参照してください。
-GUI検証のみを起動する場合：`.\.venv\Scripts\python.exe -m tools.v18_probe`。
-これはアプリ本体ではありません。
+## 起動
 
-Windows 11向けPythonデスクトップアプリの開発プロジェクトです。
-現在はPhase 1の開発環境構築のみ完了対象で、アプリ本体・起動エントリーポイントは未実装です。
-
-## 環境構築（Windows / PowerShell）
-
-Python 3.13（64bit）、Git、PATHから実行できるFFmpegが必要です。
-Pythonは[公式サイト](https://www.python.org/downloads/windows/)の署名付き64bitインストーラーでユーザー単位にインストールします。
-Python導入後はPowerShellを開き直してください。
+既存の`.venv`をそのまま使います。削除・再作成や依存関係の更新は不要です。
 
 ```powershell
 Set-Location C:\work\MogulCourseAnalyzer
-py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m mogul
 ```
 
-既存の`.venv`がある場合は作成コマンドを省略します。
-仮想環境の有効化は任意です。上記のようにPythonを直接指定すれば、PowerShellの実行ポリシー変更は不要です。
-`py`で見つからない場合は、次のPythonを直接使用できます。
+起動時に録画済み動画またはUVCを選択します。保存済み設定がある場合は前回の復元を選べます。
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m venv .venv
+.\.venv\Scripts\python.exe -m mogul --video "C:\path\course.mp4"
+.\.venv\Scripts\python.exe -m mogul --database "C:\path\session.sqlite"
 ```
 
-`requirements.in`は直接依存の一覧、`requirements.txt`は動作確認した推移的依存も含む固定バージョンの一覧です。
-依存更新時はインストール・テスト後に次のコマンドで記録を更新します。
+## 操作
+
+1. 動画はファイル選択。UVCはデバイス・解像度・FPSを選びます。機器が指定モードに対応している必要があります。
+2. AIモデル未導入のため自動検出不可と表示します。映像上をドラッグして初期四角形を作り、四隅のマーカーをドラッグしてミドルパートに合わせます。
+3. 映像内のマーカー以外をシングルクリックすると、ダブルクリック判別の待ち時間後に確定し、マーカーが消えます。
+4. 確定した領域内をダブルクリックすると再編集できます。ミドルパートを再編集するとレーン再設定が必要です。Undoで戻せます。
+5. ミドルパート確定後、2〜4レーンを指定して「手動均等分割で初期配置」を押します。これはAI検出ではありません。
+6. 各レーンを選択し、共有境界の上下マーカーで補正し、映像内クリックで個別に確定します。レーン選択状態で領域内をダブルクリックすると再編集します。
+7. Ctrl+SでSQLiteへ保存、Ctrl+ZでUndo。ResetもUndoできます。ソース変更・終了時は未保存変更の保存確認が出ます。
+
+レーン外周はミドルパートを共有し、内部境界の端点は上下外周上を移動します。外周変更はミドルパート側で行ってください。共有境界変更時は隣接レーンも未確定に戻ります。重複・空白・範囲外・自己交差となる変更は拒否します。
+
+レーン名・色、領域不透明度（初期30%）、ミドルパート色、左右反転を変更できます。反転後は領域・レーンを再確認してください。
+
+動画は再生・一時停止・シーク・前後1フレーム・0.25〜2倍速に対応します。現在位置を解析開始時刻にできます。UI編集中も再生を継続します。UVCはライブプレビューとMP4録画に対応し、切断時は3秒間隔で再接続を試みます。音声は扱いません。
+
+**Phase 1では分析開始ボタンは無効です。** ゲート・コブの確認（Phase 2）が必要であり、不足理由を画面下部に表示します。ミドルパートと全レーンを確定すれば、Phase 1のエリア設定は完了です。
+
+## 保存
+
+既定は作業フォルダ内の`data/calibration.sqlite`です。「設定を復元…」で別のSQLiteも開けます。
+正規化座標・共有境界・確定状態・レーン属性・表示設定・ソース情報・解析開始位置・検出状況を保存します。保存ごとのスナップショットと編集履歴を保持します。Undoは直近100操作で、再起動後は引き継ぎません。
+元動画はコピーせずパスを参照します。移動した動画は元のパスに戻すか、新しい映像ソースとして設定してください。
+
+録画はMP4（mp4v）と同名の`.timestamps.json`を生成します。JSONは各録画フレームのライブセッション内時刻（ミリ秒）です。欠落時は固定FPSのMP4時刻と一致しないため、この対応表を使います。
+
+## カメラなしの動作確認
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip freeze | Set-Content -Encoding utf8 requirements.txt
+.\.venv\Scripts\python.exe -m tools.create_test_video
+.\.venv\Scripts\python.exe -m mogul --video outputs/synthetic-course.mp4
 ```
 
-## 動作確認
+ラベル付き合成映像です。描画した点・旗・コブはAI認識結果ではありません。
+
+## テストと診断
 
 ```powershell
-git --version
-ffmpeg -version
-.\.venv\Scripts\python.exe --version
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m pytest -v
+.\.venv\Scripts\python.exe -m mogul --video outputs/synthetic-course.mp4 --smoke-seconds 3 --screenshot outputs/phase1.png
 ```
 
-テストではQtウィンドウを短時間表示してイベントループを確認し、OpenCV/NumPyの画像処理、Pandas/openpyxlのExcel往復、FFmpegの動画生成とOpenCVでの読み込みを確認します。
-画面を利用できるWindowsデスクトップセッションで実行してください。
-生成した画像・Excel・動画はpytestの一時ディレクトリに保存されます。
+実機確認は通常のWindowsデスクトップで実行します。番号を省略すると一覧表示のみです。
 
-## アプリ起動方法
+```powershell
+.\.venv\Scripts\python.exe -m tools.check_uvc
+.\.venv\Scripts\python.exe -m tools.check_uvc --device 0 --width 640 --height 480 --fps 30 --seconds 2
+```
 
-アプリ本体は未実装のため、現時点では起動コマンドはありません。
-上記のpytestが環境の動作確認方法です。アプリ実装時に正式な起動方法を追記します。
+既定の自動テストはカメラにアクセスしません。接続失敗時はWindowsのカメラプライバシー設定・他アプリの占有・対応モードを確認してください。隔離環境では列挙できてもDirectShow接続に失敗する場合があります。
 
-## Gitと生成物
+## 構成
 
-`.venv`、Pythonキャッシュ、テストキャッシュ、ビルド成果物、`outputs/`、`temp/`などは`.gitignore`で除外します。
-動画などの大容量入力ファイルは現時点で追加せず、管理方針を決めてから配置してください。
+| モジュール | 役割 |
+|---|---|
+| `mogul/app.py`, `source_selector.py` | 日本語GUI、入力選択、操作の接続 |
+| `mogul/video.py` | VideoSource、File/UVC、録画、別スレッド処理 |
+| `mogul/editor.py` | MiddlePartEditor / LaneEditor、透過表示、マウス操作 |
+| `mogul/models.py`, `geometry.py` | 正規化モデル、共有境界、形状・領域計算 |
+| `mogul/workflow.py` | CalibrationWorkflow、Undo、AnalysisControllerの開始条件 |
+| `mogul/detectors.py` | MiddlePartDetector / LaneDetectorの差し替え契約 |
+| `mogul/repository.py` | EventRepository、SQLite保存・復元・履歴 |
+| `tests/`, `tools/` | 回帰テスト、診断、合成動画生成、旧環境検証GUI |
 
-## 初回構築の確認結果（2026-11-15）
+既存環境のバージョンは[環境報告](ENVIRONMENT_V18.md)、今回の結果・制約・残作業は[Phase 1報告](PHASE1_REPORT.md)に記録しています。
+`requirements.in`は直接依存、`requirements.txt`は固定バージョンです。今回の実装では依存追加なし。SQLiteはPython標準です。
 
-- Windowsネイティブ x64 / PowerShell 7.6.9、OSビルド26300.9974（26H2）。レジストリのProductNameはWindows 10 Homeと表示されます。
-- Python 3.13.12 / pip 26.3を導入し、`.venv`を作成しました。
-- PySide6 6.12.0、OpenCV 5.0.0.93、NumPy 2.5.4、Pandas 3.1.1、openpyxl 3.1.5、pytest 9.2.0を導入しました。
-- Git 2.54.0.windows.1、FFmpeg 4.1.3は既存環境を使用しました。
-- `pip check`は問題なし、環境テストは4件すべて成功しました。
-- Gitは`main`で初期化済み、コミットは未作成です。隔離実行ユーザーとの所有者差異に対応するため、ユーザーのGit設定の`safe.directory`に`C:/work/MogulCourseAnalyzer`のみ登録しました。
-- FFmpegは古い既存版です。H.264生成・読み込みは確認済みですが、実際の入力動画の対応形式は今後の確認対象です。既存FFmpegはDropbox配下のPATHに依存しています。
+AIモデル・学習データは同梱していません。採用時は前後処理、精度、CPU性能、メモリ、再配布条件を検証してください。
+既存PATHのFFmpeg/ffprobeを使用します。FFmpeg 4.1.3は古く、すべてのコーデック・UVCを保証しません。実撮影の可変FPS・回転情報・HEVC/10bit・破損動画・長時間運用は追加検証が必要です。
+`.venv/`、`data/`、`outputs/`、キャッシュはGitから除外します。

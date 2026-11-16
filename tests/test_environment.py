@@ -9,12 +9,13 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QLabel
 
 
-def test_qt_event_loop():
-    app = QApplication.instance() or QApplication([])
+def test_qt_event_loop(qtbot):
     widget = QLabel("MogulCourseAnalyzer environment check")
+    qtbot.addWidget(widget)
     widget.show()
-    QTimer.singleShot(100, app.quit)
-    assert app.exec() == 0
+    qtbot.waitExposed(widget)
+    qtbot.wait(100)
+    assert widget.isVisible()
     widget.close()
 
 
