@@ -1,7 +1,8 @@
 """Calibration data and validation, independent of Qt and capture devices."""
 from dataclasses import asdict, dataclass, field
 from copy import deepcopy
-from .geometry import valid_quad, inside, overlap, area, interpolate, projection
+import numpy as np
+from .geometry import valid_quad, inside, overlap, signed_area, interpolate
 
 NAMES = {2: ['ブルー', 'レッド'], 3: ['ブルー', 'センター', 'レッド'],
          4: ['ブルーアウト', 'ブルーイン', 'レッドイン', 'レッドアウト']}
@@ -20,7 +21,8 @@ class Lane:
 class Calibration:
     middle: list = field(default_factory=list)
     middle_confirmed: bool = False
-    boundaries: list = field(default_factory=list)  # shared [top fraction, bottom fraction]
+    boundaries: list = field(default_factory=list)  # shared [[top_x, top_y], [bottom_x, bottom_y]]
+    boundary_format: int = 2
     lanes: list[Lane] = field(default_factory=list)
     opacity: float = .3
     middle_color: str = '#78d6eb'
@@ -33,16 +35,15 @@ class Calibration:
     candidate: dict = field(default_factory=dict)
 
     def lane_polygon(self, index):
-        a, b, c, d = self.middle
-        t0, b0 = self.boundaries[index]
-        t1, b1 = self.boundaries[index+1]
-        return [interpolate(a, b, t0), interpolate(a, b, t1),
-                interpolate(d, c, b1), interpolate(d, c, b0)]
+        top_left, bottom_left = self.boundaries[index]
+        top_right, bottom_right = self.boundaries[index+1]
+        return deepcopy([top_left, top_right, bottom_right, bottom_left])
 
     def configure_lanes(self, count):
         if not self.middle_confirmed or count not in NAMES:
             raise ValueError('ミドルパート確定後、2〜4レーンを指定してください')
-        self.boundaries = [[i/count, i/count] for i in range(count+1)]
+        a, b, c, d = self.middle
+        self.boundaries = [[interpolate(a, b, i/count), interpolate(d, c, i/count)] for i in range(count+1)]
         self.lanes = []
         for i, name in enumerate(NAMES[count]):
             group = 'neutral' if count == 3 and i == 1 else ('blue' if i < count/2 else 'red')
@@ -56,32 +57,34 @@ class Calibration:
     def lanes_valid(self):
         if not valid_quad(self.middle) or len(self.lanes) not in NAMES or len(self.boundaries) != len(self.lanes)+1:
             return False
-        if self.boundaries[0] != [0, 0] or self.boundaries[-1] != [1, 1]:
+        try:
+            points = np.asarray(self.boundaries, dtype=float)
+        except (TypeError, ValueError):
             return False
-        if any(not (0 <= p[0] <= 1 and 0 <= p[1] <= 1) for p in self.boundaries):
-            return False
-        if any(self.boundaries[i][j] >= self.boundaries[i+1][j] for i in range(len(self.lanes)) for j in (0, 1)):
+        if points.shape != (len(self.lanes)+1, 2, 2) or not np.isfinite(points).all():
             return False
         polygons = [self.lane_polygon(i) for i in range(len(self.lanes))]
         if any(not valid_quad(p) or not inside(self.middle, p) for p in polygons):
             return False
         if any(overlap(p, q) > 2e-6 for i, p in enumerate(polygons) for q in polygons[i+1:]):
             return False
-        return abs(sum(area(p) for p in polygons)-area(self.middle)) < 2e-6
+        # Shared full edges prevent gaps between adjacent lanes. The union need not
+        # fill the middle part: the space between bumps and gates is intentional.
+        return all(signed_area(p)*signed_area(self.middle) > 0 for p in polygons)
 
     def move_lane_corner(self, index, corner, point):
+        if not (0 <= index < len(self.lanes) and corner in (0, 1, 2, 3)):
+            return False
         boundary = index + (corner in (1, 2))
         bottom = corner in (2, 3)
-        if boundary in (0, len(self.lanes)):
-            return False  # outer border belongs to the middle-part editor
-        edge = (self.middle[3], self.middle[2]) if bottom else (self.middle[0], self.middle[1])
         old = deepcopy(self.boundaries)
-        self.boundaries[boundary][int(bottom)] = projection(*edge, point)
+        self.boundaries[boundary][int(bottom)] = list(point)
         if not self.lanes_valid():
             self.boundaries = old
             return False
         for neighbor in (boundary-1, boundary):
-            self.lanes[neighbor].confirmed = False
+            if 0 <= neighbor < len(self.lanes):
+                self.lanes[neighbor].confirmed = False
         self.gates_confirmed = self.bumps_confirmed = False
         return True
 
@@ -96,6 +99,20 @@ class Calibration:
     @classmethod
     def from_dict(cls, data):
         data = deepcopy(data)
+        version = data.get('boundary_format', 1)
+        if version not in (1, 2):
+            raise ValueError('未対応のレーン座標形式です')
+        if version == 1 and data.get('boundaries'):
+            # Read old snapshots without modifying the original SQLite records.
+            try:
+                a, b, c, d = data['middle']
+                fractions = np.asarray(data['boundaries'], dtype=float)
+                if fractions.shape != (len(data.get('lanes', []))+1, 2) or not np.isfinite(fractions).all() or (fractions < 0).any() or (fractions > 1).any():
+                    raise ValueError('旧レーン座標が不正です')
+                data['boundaries'] = [[interpolate(a, b, t), interpolate(d, c, u)] for t, u in fractions]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError('旧レーン座標が不正です') from exc
+        data['boundary_format'] = 2
         data['lanes'] = [Lane(**x) for x in data.get('lanes', [])]
         result = cls(**data)
         if result.middle and not valid_quad(result.middle):

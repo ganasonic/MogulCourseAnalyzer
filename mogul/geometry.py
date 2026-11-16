@@ -10,9 +10,13 @@ def cross(a, b, c):
     return float((b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]))
 
 
-def area(points):
+def signed_area(points):
     p = np.asarray(points, float)
-    return abs(float(np.dot(p[:, 0], np.roll(p[:, 1], -1)) - np.dot(p[:, 1], np.roll(p[:, 0], -1)))) / 2
+    return float(np.dot(p[:, 0], np.roll(p[:, 1], -1)) - np.dot(p[:, 1], np.roll(p[:, 0], -1))) / 2
+
+
+def area(points):
+    return abs(signed_area(points))
 
 
 def on_segment(a, b, p):

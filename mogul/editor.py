@@ -117,16 +117,14 @@ class CalibrationView(QGraphicsView):
             self.overlays.append(text)
         if self.polygon() and not self.confirmed():
             for i, point in enumerate(self.polygon()):
-                fixed = self.mode == 'lane' and ((self.lane_index == 0 and i in (0, 3)) or
-                    (self.lane_index == len(c.lanes)-1 and i in (1, 2)))
                 pen = QPen(QColor('white'))
                 pen.setCosmetic(True)
-                item = self.scene().addEllipse(-7, -7, 14, 14, pen, QColor('#78838f' if fixed else '#ffbe55'))
+                item = self.scene().addEllipse(-7, -7, 14, 14, pen, QColor('#ffbe55'))
                 item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
                 item.setPos(point[0]*self.width_px, point[1]*self.height_px)
                 item.setZValue(10)
                 self.overlays.append(item)
-                self.handles.append((i, item, fixed))
+                self.handles.append((i, item))
 
     def _polygon(self, points, color, opacity, confirmed):
         color = QColor(color)
@@ -154,15 +152,12 @@ class CalibrationView(QGraphicsView):
         if not all(0 <= v <= 1 for v in raw):
             self.press = None
             return
-        for corner, item, fixed in self.handles:
+        for corner, item in self.handles:
             pos = self.mapFromScene(item.pos())
             if math.hypot(pos.x()-event.position().x(), pos.y()-event.position().y()) < 13:
                 self.suppress_release = True
-                if fixed:
-                    self.notice.emit('外側境界はミドルパートと共有しています。変更はミドルパート再編集で行ってください。')
-                else:
-                    self.workflow.checkpoint()
-                    self.drag = ('corner', corner)
+                self.workflow.checkpoint()
+                self.drag = ('corner', corner)
                 return
         if self.mode == 'middle' and not self.calibration.middle:
             self.workflow.checkpoint()
@@ -184,7 +179,7 @@ class CalibrationView(QGraphicsView):
                     self.notice.emit('自己交差・面積ゼロになる四角形には変更できません。')
             else:
                 if not LaneEditor(self.workflow).move(self.lane_index, value, point):
-                    self.notice.emit('重複・空白・範囲外になる変更はできません。マーカーは上下の外周上を移動します。')
+                    self.notice.emit('レーンの重複・自己交差・ミドルパート範囲外になる変更はできません。ゲート側との余白は設定できます。')
                 else:
                     self.workflow.dirty = True
             self.redraw()
