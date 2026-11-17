@@ -114,7 +114,7 @@ def test_bump_registry_labels_ids_sides_and_regions(course):
     assert first.id == identifier and not first.confirmed
     assert registry.resize(first.id,0,[.64,.28])
     assert not registry.resize(first.id,0,[.1,.1])
-    assert 'Aレーン' in ' '.join(bump_errors(course))
+    assert not any('Aレーン' in error for error in bump_errors(course))  # optional, no per-lane quota
     registry.remove(second.id)
     assert all(b.id != second.id for b in course.bumps)
 
@@ -122,7 +122,7 @@ def test_bump_registry_labels_ids_sides_and_regions(course):
 def test_real_registration_is_required_and_rechecks_layout(course):
     controller = AnalysisController(CalibrationWorkflow(course))
     course.gates_confirmed = course.bumps_confirmed = True
-    assert not controller.can_start(True)
+    assert not controller.can_start(True,require_landmarks=True)
     populated(course)
     assert controller.can_start(True) and not controller.can_start(False)
     data = course.to_dict()
@@ -302,7 +302,7 @@ def test_gui_restore_phase2_with_actual_video(qtbot,window,tmp_path):
     assert restored.gates_confirmed and restored.bumps_confirmed
     assert window.landmarks_panel.gates.count() == 3
     assert window.landmarks_panel.bumps.count() == 2
-    assert window.view.mode == 'landmarks' and window.right_tabs.currentIndex() == 1
+    assert window.view.mode == 'analysis' and window.right_tabs.currentIndex() == 3
     assert window.analyze_button.isEnabled() == Path(window.analysis_panel.model.text()).is_file()
 
 

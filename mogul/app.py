@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         self.record_label = QLabel('UVC入力で録画できます')
         recording.addWidget(self.record_label, 1)
         video_layout.addLayout(recording)
-        self.notice = QLabel('① ミドルパート → ② 全レーン確定 → ③ ゲート・コブ設定 → 保存')
+        self.notice = QLabel('人数分析はミドルパートと全レーンの確定だけで開始できます。ゲート・コブ登録は不要です。')
         self.notice.setWordWrap(True)
         self.notice.setMinimumHeight(46)
         video_layout.addWidget(self.notice)
@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
         self.prerequisites.setWordWrap(True)
         footer.addWidget(self.prerequisites, 1)
         self.analyze_button = QPushButton('分析開始')
-        self.analyze_button.setToolTip('指定開始時刻から人物検出・追跡・人数集計を実行します。')
+        self.analyze_button.setToolTip('ミドルパートとレーンを確定すると人数分析できます。ゲート・コブ登録は不要です。')
         self.analyze_button.clicked.connect(self.start_analysis)
         footer.addWidget(self.analyze_button)
         root.addLayout(footer)
@@ -548,6 +548,9 @@ class MainWindow(QMainWindow):
         if c.middle_confirmed and 'lanes' not in c.candidate:
             self.detect_lanes()
         self.refresh()
+        if self.view.mode=='lane' and layout_ready(c):
+            self.right_tabs.setCurrentIndex(3)
+            self.notice.setText('人数分析の準備ができました。「分析開始」へ進めます。ゲート・コブ登録は不要です。')
 
     def rename_lane(self):
         i = self.lane_select.currentIndex()
@@ -724,8 +727,9 @@ class MainWindow(QMainWindow):
             self.analysis_panel.refresh_history()
             self.landmarks_panel.selected = None
             self.view.selected_landmark = None
-            self.view.set_mode('landmarks' if calibration.control_gates or calibration.bumps else ('lane' if calibration.lanes else 'middle'))
-            self.right_tabs.setCurrentIndex(1 if calibration.control_gates or calibration.bumps else 0)
+            ready=layout_ready(calibration)
+            self.view.set_mode('analysis' if ready else ('lane' if calibration.lanes else 'middle'))
+            self.right_tabs.setCurrentIndex(3 if ready else 0)
             self.sync_settings()
             self.notice.setText('保存済みの設定を復元しました。')
             if calibration.source:

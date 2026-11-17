@@ -250,7 +250,8 @@ class AnalysisPanel(QScrollArea):
             check.setChecked(lane in run.get('passed_lanes',[]))
         self.changes.setValue(run.get('change_count_override') if run.get('change_count_override') is not None else len(run.get('changes',[])))
         self.manual_time.setValue(run['first_ms']/1000)
-        bumps=', '.join(b['label'] for b in run.get('bumps',[])) or 'なし'
+        calibration=self.data.get('calibration',{})
+        bumps=(', '.join(b['label'] for b in run.get('bumps',[])) or '登録済み範囲で該当なし') if calibration.get('bumps_confirmed') else '未設定（人数分析には不要）'
         self.details.setText(f"滑走 {run['id'][:8]} / {run['first_ms']/1000:.2f}〜{run['last_ms']/1000:.2f}秒\n通過コブ: {bumps}\n"+('追跡ID再接続あり・要確認' if run.get('relinked') else ''))
 
     def edit(self,action):

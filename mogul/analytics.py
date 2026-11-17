@@ -118,7 +118,7 @@ class AnalyticsEngine:
             if previous and lane==run.lane and lane is not None and 0<timestamp-previous_ms<=1500 and np.linalg.norm(np.array(point)-previous)<.25 and depth>course_position(self.c,previous)[1]+1e-5:
                 visited={b['bump_id'] for b in run.bumps}
                 for bump in self.c.bumps:
-                    if bump.id in visited or bump.lane_id!=run.lane:
+                    if not self.c.bumps_confirmed or not bump.confirmed or bump.id in visited or bump.lane_id!=run.lane:
                         continue
                     polygon=bump.polygon
                     if contains(polygon,point) or contains(polygon,previous) or any(intersects(previous,point,polygon[i],polygon[(i+1)%4]) for i in range(4)):

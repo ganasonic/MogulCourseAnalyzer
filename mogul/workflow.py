@@ -35,7 +35,7 @@ class CalibrationWorkflow:
         self.dirty = True
         return True
 
-    def reasons(self, source_ok):
+    def reasons(self, source_ok, require_landmarks=False):
         c = self.calibration
         reasons = []
         if not source_ok:
@@ -46,9 +46,9 @@ class CalibrationWorkflow:
             reasons.append('レーン数・位置が未設定です')
         elif not c.lanes_valid() or not all(x.confirmed for x in c.lanes):
             reasons.append('全レーンを確定してください')
-        if not c.gates_confirmed or gate_errors(c):
+        if require_landmarks and (not c.gates_confirmed or gate_errors(c)):
             reasons.append('ゲート設定が未確認です')
-        if not c.bumps_confirmed or bump_errors(c):
+        if require_landmarks and (not c.bumps_confirmed or bump_errors(c)):
             reasons.append('コブ位置設定が未確認です')
         return reasons
 
@@ -57,5 +57,5 @@ class AnalysisController:
     def __init__(self, workflow):
         self.workflow = workflow
 
-    def can_start(self, source_ok):
-        return not self.workflow.reasons(source_ok)
+    def can_start(self, source_ok, require_landmarks=False):
+        return not self.workflow.reasons(source_ok,require_landmarks=require_landmarks)

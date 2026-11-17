@@ -118,9 +118,8 @@ def bump_errors(c, require_confirmed=True):
     if not layout_ready(c):
         errors.append('ミドルパートと全レーンを先に確定してください')
     keys = set()
-    for lane in c.lanes:
-        if not any(b.lane_id == lane.id for b in c.bumps):
-            errors.append(f'{lane.id}レーンのコブを登録してください')
+    if not c.bumps:
+        errors.append('登録したコブがありません（人数分析には不要です）')
     for bump in c.bumps:
         if not bump_position_valid(c, bump):
             errors.append('コブの中心と領域を所属レーン内に配置してください')
@@ -194,6 +193,61 @@ class BumpRegistry:
         self.c.bumps.append(bump)
         self.c.bumps_confirmed = False
         return bump
+
+    def add_center(self,lane_id,point,gate_number=1):
+        index=next((i for i,lane in enumerate(self.c.lanes) if lane.id==lane_id),None)
+        if index is None or not valid_point(point) or not contains(self.c.lane_polygon(index),point):
+            raise ValueError('選択レーン内のコブの中心をクリックしてください')
+        lane=np.asarray(self.c.lane_polygon(index),np.float32)
+        unit=np.array([[0,0],[1,0],[1,1],[0,1]],np.float32)
+        matrix=cv2.getPerspectiveTransform(lane,unit)
+        inverse=cv2.getPerspectiveTransform(unit,lane)
+        u,v=cv2.perspectiveTransform(np.asarray([[point]],np.float32),matrix)[0,0]
+        for fraction in [1,.5,.25,.125]:
+            width,height=.12*fraction,.024*fraction
+            left=float(np.clip(u-width/2,0,1-width)); top=float(np.clip(v-height/2,0,1-height))
+            box=np.array([[[left,top],[left+width,top],[left+width,top+height],[left,top+height]]],np.float32)
+            polygon=cv2.perspectiveTransform(box,inverse)[0].tolist()
+            proposed=Bump('',lane_id,list(point),polygon,gate_number)
+            if bump_position_valid(self.c,proposed):
+                bump=self.add(lane_id,polygon,gate_number)
+                bump.center=list(point)
+                bump.origin='manual-center'
+                return bump
+        raise ValueError('中心の周囲に仮領域を作れません。少し内側をクリックしてください')
+
+    def add_line(self,lane_id,start,end,count,gate_number=1):
+        if type(count) is not int or not 2<=count<=250 or np.linalg.norm(np.asarray(start)-end)<.001:
+            raise ValueError('異なる2点と2〜250個を指定してください')
+        index=next((i for i,lane in enumerate(self.c.lanes) if lane.id==lane_id),None)
+        if index is None:
+            raise ValueError('レーンを選択してください')
+        lane=np.asarray(self.c.lane_polygon(index),np.float32)
+        unit=np.array([[0,0],[1,0],[1,1],[0,1]],np.float32)
+        matrix=cv2.getPerspectiveTransform(lane,unit)
+        inverse=cv2.getPerspectiveTransform(unit,lane)
+        ends=cv2.perspectiveTransform(np.asarray([[start,end]],np.float32),matrix)[0]
+        coordinates=np.asarray([[ends[0]*(1-t)+ends[1]*t for t in np.linspace(0,1,count)]],np.float32)
+        points=cv2.perspectiveTransform(coordinates,inverse)[0]
+        previous=deepcopy(self.c.bumps)
+        confirmed=self.c.bumps_confirmed
+        try:
+            result=[self.add_center(lane_id,p.tolist(),gate_number) for p in points]
+            for bump in result:
+                bump.origin='manual-batch'
+            return result
+        except ValueError:
+            self.c.bumps=previous
+            self.c.bumps_confirmed=confirmed
+            raise
+
+    def confirm_all(self):
+        errors=bump_errors(self.c,require_confirmed=False)
+        if errors:
+            raise ValueError(' ／ '.join(errors))
+        for bump in self.c.bumps:
+            bump.confirmed=True
+        self.c.bumps_confirmed=True
 
     def move(self, identifier, point):
         bump = next(b for b in self.c.bumps if b.id == identifier)

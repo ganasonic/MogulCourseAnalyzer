@@ -384,6 +384,23 @@ def test_gui_corrupt_model_does_not_show_previous_counts(qtbot,window,tmp_path):
     assert panel.summary.text()=='集計なし' and 'SHA256' in panel.progress.text()
 
 
+def test_gui_counts_without_any_gate_or_bump(qtbot,window,tmp_path,monkeypatch):
+    import mogul.app as app
+    monkeypatch.setattr(app,'AnalysisWorker',lambda *args,**kwargs:AnalysisWorker(*args,**kwargs,detector_factory=FixtureDetector))
+    c=window.workflow.calibration
+    c.control_gates=[]; c.bumps=[]
+    c.gates_confirmed=c.bumps_confirmed=False
+    model=tmp_path/'fixture.onnx'; model.write_bytes(b'test fixture')
+    window.analysis_panel.model.setText(str(model))
+    window.refresh()
+    assert window.analyze_button.isEnabled()
+    window.start_analysis()
+    qtbot.waitUntil(lambda:not window.analysis_active,timeout=8000)
+    assert window.analysis_result['status']=='completed'
+    assert 'ユニーク滑走 1' in window.analysis_panel.summary.text()
+    assert not window.workflow.calibration.bumps and not window.workflow.calibration.control_gates
+
+
 @pytest.mark.skipif(not DEFAULT_MODEL.is_file(),reason='optional real model: run tools.install_person_model')
 def test_real_yolox_blank_cpu_inference():
     detector=AthleteDetector()

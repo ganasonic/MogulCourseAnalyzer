@@ -409,7 +409,7 @@ class CalibrationView(QGraphicsView):
         if event.button() == Qt.LeftButton and self.press is not None and (event.position()-self.press).manhattanLength() < 4:
             raw = self.normalized_position(event, False)
             if self.mode == 'landmarks':
-                if all(0 <= v <= 1 for v in raw) and self.landmark_tool in ('add_left','add_right'):
+                if all(0 <= v <= 1 for v in raw) and self.landmark_tool in ('add_left','add_right','add_bump_center','add_bump_line'):
                     self.landmark_add_requested.emit(self.landmark_tool,raw)
                 return
             if all(0 <= v <= 1 for v in raw) and not self.confirmed():

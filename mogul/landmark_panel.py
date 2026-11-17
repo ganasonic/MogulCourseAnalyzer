@@ -31,15 +31,19 @@ class LandmarkPanel(QScrollArea):
         self.snapshot = None
         self.request_id = None
         self.refreshing = False
+        self.batch_start = None
+        self.batch_context = None
         self.setWidgetResizable(True)
         body = QWidget()
         layout = QVBoxLayout(body)
-        self.explanation = QLabel('ミドルパートと全レーン確定後に設定できます。\nゲートはレーン外側の余白へ、コブはレーン内へ登録します。')
+        self.explanation = QLabel('人数分析はミドルパートとレーンの設定だけで開始できます。\nゲート・コブは任意の追加設定です。登録を省略できます。')
         self.explanation.setWordWrap(True)
         layout.addWidget(self.explanation)
         self.tool = QComboBox()
         for name,value in [('選択・ドラッグ移動','select'),('左ゲートをクリック追加','add_left'),
-                           ('右ゲートをクリック追加','add_right'),('選択レーン内をドラッグしてコブ追加','add_bump'),
+                           ('右ゲートをクリック追加','add_right'),('コブ中心をクリック追加（任意）','add_bump_center'),
+                           ('2点でコブ列を一括仮配置（手動指定）','add_bump_line'),
+                           ('四角形でコブを追加（詳細設定）','add_bump'),
                            ('選択コブの四隅を補正','resize_bump')]:
             self.tool.addItem(name,value)
         self.tool.currentIndexChanged.connect(self.arm_tool)
@@ -82,16 +86,32 @@ class LandmarkPanel(QScrollArea):
         tabs.addTab(gate_page,'ゲート')
         bump_page = QWidget()
         bumps_layout = QVBoxLayout(bump_page)
+        explanation=QLabel('人数分析には不要です。コブ別の解析に使う場合のみ設定します。\n全コブを個別に囲む必要はありません。自動検出は未実装です。')
+        explanation.setWordWrap(True)
+        bumps_layout.addWidget(explanation)
+        quick_form=QFormLayout()
+        self.bump_lane = QComboBox()
+        quick_form.addRow('所属レーン',self.bump_lane)
+        self.bump_gate = QSpinBox()
+        self.bump_gate.setRange(1,9)
+        quick_form.addRow('基準ゲート（全体番号）',self.bump_gate)
+        bumps_layout.addLayout(quick_form)
+        center_button=QPushButton('中心クリックで追加（小さな仮領域を付与）')
+        center_button.clicked.connect(lambda:self.tool.setCurrentIndex(self.tool.findData('add_bump_center')))
+        bumps_layout.addWidget(center_button)
+        self.batch_count=QSpinBox()
+        self.batch_count.setRange(2,250)
+        self.batch_count.setValue(10)
+        self.batch_count.setPrefix('一括仮配置の個数: ')
+        bumps_layout.addWidget(self.batch_count)
+        batch_button=QPushButton('一列の最初・最後の2点で一括仮配置')
+        batch_button.clicked.connect(lambda:self.tool.setCurrentIndex(self.tool.findData('add_bump_line')))
+        bumps_layout.addWidget(batch_button)
         self.bumps = QListWidget()
         self.bumps.setMinimumHeight(140)
         self.bumps.currentItemChanged.connect(self.bump_selected)
         bumps_layout.addWidget(self.bumps)
         form = QFormLayout()
-        self.bump_lane = QComboBox()
-        form.addRow('所属レーン',self.bump_lane)
-        self.bump_gate = QSpinBox()
-        self.bump_gate.setRange(1,9)
-        form.addRow('基準ゲート（全体番号）',self.bump_gate)
         self.bump_sequence = QSpinBox()
         self.bump_sequence.setRange(1,9999)
         form.addRow('ゲートからのコブ順序',self.bump_sequence)
@@ -106,10 +126,10 @@ class LandmarkPanel(QScrollArea):
         self.delete_bump = QPushButton('選択コブを削除')
         self.delete_bump.clicked.connect(lambda:self.remove('bump'))
         bumps_layout.addWidget(self.delete_bump)
-        self.confirm_bumps = QPushButton('全レーンのコブ設定を確定')
-        self.confirm_bumps.clicked.connect(lambda:self.perform(lambda:BumpRegistry(self.c).confirm(),'コブ設定を確定しました。'))
+        self.confirm_bumps = QPushButton('登録したコブをまとめて確認・確定')
+        self.confirm_bumps.clicked.connect(lambda:self.perform(lambda:BumpRegistry(self.c).confirm_all(),'登録したコブをまとめて確定しました。'))
         bumps_layout.addWidget(self.confirm_bumps)
-        hint = QLabel('コブは手動登録です。「選択・ドラッグ移動」で中心を移動。\n「選択コブの四隅を補正」で領域を変更できます。\n新規登録の順序は同レーン・同ゲート内で次の番号になります。\nゲート番号が変わると1から開始します。\nL/Rは画面の左右や選手のターン方向とは別です。')
+        hint = QLabel('仮領域は判定用の範囲で、コブ形状の自動認識ではありません。\n四隅補正は必要な場合だけ使います。\n一括配置は同一ゲート区間の一列を個数指定する手動補助です。\n左右はUNKNOWNを許容し、個別入力を強制しません。')
         hint.setWordWrap(True)
         bumps_layout.addWidget(hint)
         tabs.addTab(bump_page,'コブ')
@@ -133,6 +153,8 @@ class LandmarkPanel(QScrollArea):
         if self.refreshing:
             return
         self.window.view.landmark_tool = self.tool.currentData()
+        self.batch_start = None
+        self.batch_context = None
         self.window.view.set_mode('landmarks')
         self.status.setText(self.tool.currentText()+'。映像上で操作してください。')
 
@@ -159,7 +181,26 @@ class LandmarkPanel(QScrollArea):
 
     def add_record(self,tool,geometry):
         created = []
-        if tool == 'add_bump':
+        if tool == 'add_bump_line':
+            context=(self.window.request_id,self.bump_lane.currentData(),self.bump_gate.value())
+            if context!=self.batch_context:
+                self.batch_start=None
+            if self.batch_start is None:
+                self.batch_start=geometry
+                self.batch_context=context
+                self.status.setText('一列の最初の点を指定しました。最後のコブ中心をクリックしてください。')
+                return
+            start=self.batch_start
+            if self.perform(lambda:created.extend(BumpRegistry(self.c).add_line(self.bump_lane.currentData(),start,geometry,self.batch_count.value(),self.bump_gate.value())), '手動指定の一括仮配置です。位置と番号を見て、必要な箇所だけ修正してください（AI検出ではありません）。'):
+                self.batch_start=None
+                self.tool.setCurrentIndex(0)
+                self.select_record('bump',created[0].id)
+                self.status.setText('個数指定による手動の仮配置です（AI検出ではありません）。合わない箇所だけ修正できます。人数分析には登録不要です。')
+            return
+        if tool == 'add_bump_center':
+            action=lambda:created.append(BumpRegistry(self.c).add_center(self.bump_lane.currentData(),geometry,self.bump_gate.value()))
+            kind='bump'
+        elif tool == 'add_bump':
             action = lambda:created.append(BumpRegistry(self.c).add(self.bump_lane.currentData(),geometry,self.bump_gate.value()))
             kind = 'bump'
         else:

@@ -184,10 +184,10 @@ def test_analysis_prerequisites(calibration):
     calibration.configure_lanes(2)
     for lane in calibration.lanes:
         lane.confirmed = True
-    assert not controller.can_start(True)
-    assert len(workflow.reasons(True)) == 2
+    assert controller.can_start(True)  # people counting does not require landmark registration
+    assert len(workflow.reasons(True,require_landmarks=True)) == 2
     calibration.gates_confirmed = calibration.bumps_confirmed = True
-    assert not controller.can_start(True)  # flags alone cannot bypass actual registration
+    assert not controller.can_start(True,require_landmarks=True)  # feature-specific strict checks
     assert not controller.can_start(False)
 
 
@@ -362,7 +362,7 @@ def test_restart_restore_and_controls(qtbot, window, calibration, video_path):
     assert window.workflow.calibration.lanes[2].name.endswith('（変更済み）')
     assert all(x.confirmed for x in window.workflow.calibration.lanes)
     assert not window.view.handles
-    assert not window.analyze_button.isEnabled()
+    assert window.analyze_button.isEnabled() == Path(window.analysis_panel.model.text()).is_file()
 
 
 def test_mirror_undo_and_no_silent_reset(window, calibration):
