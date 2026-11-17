@@ -343,8 +343,18 @@ class MainWindow(QMainWindow):
 
     def on_frame(self, frame):
         if self.analysis_active:
-            if self.metadata.get('live') and frame.source_id == self.request_id:
+            if self.analysis_job.queued and frame.source_id == self.request_id:
+                if not self.metadata.get('live') and self.analysis_waiting_seek:
+                    if abs(frame.timestamp_ms-self.workflow.calibration.start_ms)>1000/max(1,self.metadata.get('fps',30)):
+                        return
+                    self.analysis_waiting_seek=False
                 self.analysis_job.submit(frame)
+                had_tracks=bool(self.view.analysis_tracks)
+                self.view.analysis_tracks = []
+                self.present_frame(frame)
+                if had_tracks:
+                    self.view.redraw()
+                    self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected)
             return
         had_tracks = bool(self.view.analysis_tracks)
         self.view.analysis_tracks = []
@@ -389,6 +399,8 @@ class MainWindow(QMainWindow):
         changed = self.source_ok != healthy
         self.source_ok = healthy
         if not healthy:
+            if self.analysis_active and self.analysis_job.queued and not self.metadata.get('live'):
+                self.stop_analysis()
             self.pending_recording = False
             self.notice.setText(text + (' ／ 3秒後に再接続を試みます' if self.metadata.get('live') else ''))
             self.input_label.setText('入力異常: ' + text[:200])
@@ -405,6 +417,8 @@ class MainWindow(QMainWindow):
 
     def on_ended(self, request_id):
         if request_id == self.request_id:
+            if self.analysis_active and self.analysis_job.queued and not self.metadata.get('live') and not self.analysis_waiting_seek:
+                self.analysis_job.end_input()
             self.notice.setText('動画の終端です。シークまたは先頭に戻して再生できます。')
 
     def toggle_play(self):
@@ -763,6 +777,7 @@ class MainWindow(QMainWindow):
             config['live_start_after_ms'] = ((time.monotonic()-self.metadata['_live_epoch'])*1000
                                             if '_live_epoch' in self.metadata else self.current_frame.timestamp_ms)
         self.analysis_result = None
+        self.analysis_waiting_seek = not self.metadata.get('live')
         self.analysis_panel.reset_result()
         self.analysis_panel.set_active(True)
         self.analysis_job = AnalysisWorker(self.workflow.calibration,self.database,self.session_id,config,self.request_id,self)
@@ -771,6 +786,11 @@ class MainWindow(QMainWindow):
         self.analysis_job.completed.connect(self.on_analysis_completed)
         self.analysis_job.finished.connect(self.finish_analysis)
         self.analysis_job.start()
+        if self.analysis_job.queued and not self.metadata.get('live'):
+            self.speed.setCurrentIndex(2)
+            self.worker.command('speed',1.0)
+            self.worker.command('seek',self.workflow.calibration.start_ms)
+            self.worker.command('play',True)
         self.right_tabs.setCurrentIndex(3)
         self.refresh()
 
@@ -782,15 +802,20 @@ class MainWindow(QMainWindow):
     def stop_analysis(self):
         if self.analysis_active:
             self.analysis_job.requestInterruption()
+            if not self.metadata.get('live'):
+                self.worker.command('play',False)
             self.analysis_panel.progress.setText('停止・保存中…')
 
     def on_analysis_packet(self,packet):
         if self.closing or packet['frame'].source_id != self.request_id:
             return
-        self.present_frame(packet['frame'])
-        self.view.analysis_tracks = packet['tracks']
+        queued=self.analysis_active and self.analysis_job.queued
+        if not queued:
+            self.present_frame(packet['frame'])
+        matches=self.current_frame is not None and self.current_frame.index==packet['frame'].index
+        self.view.analysis_tracks = packet['tracks'] if matches else []
         self.view.redraw()
-        self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,packet['tracks'])
+        self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
         self.analysis_panel.show_packet(packet)
 
     def on_analysis_completed(self,result):
@@ -803,6 +828,8 @@ class MainWindow(QMainWindow):
 
     def finish_analysis(self):
         job = self.analysis_job
+        if job.queued and not self.metadata.get('live'):
+            self.worker.command('play',False)
         self.analysis_job = None
         job.deleteLater()
         self.analysis_panel.set_active(False)

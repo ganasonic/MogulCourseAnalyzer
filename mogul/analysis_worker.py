@@ -2,6 +2,7 @@
 from copy import deepcopy
 import queue
 import time
+import threading
 from PySide6.QtCore import QThread,Signal
 from .analysis_repository import AnalysisRepository
 from .athlete_detector import AthleteDetector
@@ -27,9 +28,16 @@ class AnalysisWorker(QThread):
         self.source_factory=source_factory
         self.inputs=queue.Queue(maxsize=1)
         self.dropped=0
+        self.input_ended=threading.Event()
+        self.queued=calibration.source.get('kind')=='uvc' or config.get('processing_mode')=='realtime'
+
+    def end_input(self):
+        self.input_ended.set()
 
     def submit(self,frame):
-        if self.isInterruptionRequested():
+        if self.isInterruptionRequested() or self.input_ended.is_set():
+            return
+        if frame.timestamp_ms+.5<self.calibration.start_ms:
             return
         if frame.timestamp_ms<=self.config.get('live_start_after_ms',-1):
             return
@@ -59,15 +67,18 @@ class AnalysisWorker(QThread):
             course_position(self.calibration,self.calibration.middle[0])
             identifier=repository.begin(self.calibration,self.session_id,self.config,detector.sha256)
             live=self.calibration.source.get('kind')=='uvc'
-            if not live:
+            if not self.queued:
                 source=self.source_factory(self.calibration.source['path'])
                 source.seek(self.calibration.start_ms)
             self.phase.emit('人物検出・追跡を実行中（集計は未確認の自動推定を含みます）')
             while not self.isInterruptionRequested():
-                if live:
+                if self.queued:
                     try:
                         frame=self.inputs.get(timeout=.2)
                     except queue.Empty:
+                        if self.input_ended.is_set():
+                            status='completed'
+                            break
                         continue
                 else:
                     frame=source.read()
@@ -77,7 +88,7 @@ class AnalysisWorker(QThread):
                     if frame.timestamp_ms+.5<self.calibration.start_ms:
                         continue
                 if last_timestamp is not None and frame.timestamp_ms<=last_timestamp:
-                    if live:
+                    if self.queued:
                         self.dropped+=1
                         continue
                     raise ValueError('動画時刻が単調増加しません。デコーダーの時刻情報を確認してください')
@@ -103,7 +114,7 @@ class AnalysisWorker(QThread):
                 source.close()
             if identifier:
                 try:
-                    if live:
+                    if self.queued:
                         self.dropped+=self.inputs.qsize()
                     repository.finish(identifier,status,error,{'frames_processed':processed,'dropped_frames':self.dropped,'last_timestamp_ms':last_timestamp})
                 except Exception as exc:

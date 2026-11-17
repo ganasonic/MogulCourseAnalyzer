@@ -223,6 +223,58 @@ def test_live_queue_drops_are_explicit_and_stoppable(qtbot,tmp_path,course):
     assert saved['dropped_frames']==13
 
 
+def test_realtime_file_queue_finishes_and_accounts_for_every_input(qtbot,tmp_path,course):
+    course.source={'kind':'file','path':'must-not-open.mp4'}
+    path=tmp_path/'realtime.sqlite'
+    job=AnalysisWorker(course,path,None,{'model_path':'fixture','processing_mode':'realtime'},7,
+                       detector_factory=FixtureDetector,source_factory=lambda _:pytest.fail('second decoder opened'))
+    results=[]; packets=[]
+    job.completed.connect(results.append); job.packet.connect(packets.append)
+    for i in range(12):
+        job.submit(VideoFrame(np.zeros((100,160,3),np.uint8),i*100,i,7))
+    job.end_input()
+    job.start()
+    qtbot.waitUntil(lambda:bool(results),timeout=5000)
+    assert job.wait(1000)
+    assert results[0]['status']=='completed'
+    assert results[0]['processed']==1 and results[0]['dropped']==11
+    assert packets[-1]['frame'].index==11
+    saved=AnalysisRepository(path).load_analysis(results[0]['id'])
+    assert saved['frames_processed']+saved['dropped_frames']==12
+
+
+def test_realtime_preview_advances_during_slow_inference(qtbot,window,tmp_path,monkeypatch):
+    import mogul.app as app
+    class SlowDetector(FixtureDetector):
+        def detect(self,*args,**kwargs):
+            time.sleep(.55)  # far slower than the 10fps source
+            return super().detect(*args,**kwargs)
+    monkeypatch.setattr(app,'AnalysisWorker',lambda *a,**kw:AnalysisWorker(*a,**kw,detector_factory=SlowDetector))
+    model=tmp_path/'fixture.onnx'; model.write_bytes(b'synthetic test only')
+    window.analysis_panel.model.setText(str(model))
+    assert window.analysis_panel.config()['processing_mode']=='realtime'
+    seen=[]; ticks=[]
+    window.worker.frame_ready.connect(lambda frame:seen.append((frame.index,time.monotonic())))
+    timer=QTimer(window); timer.timeout.connect(lambda:ticks.append(window.current_frame.index)); timer.start(20)
+    started=time.monotonic()
+    window.start_analysis()
+    observations=[]
+    window.analysis_job.packet.connect(lambda p:observations.append(
+        (p['frame'].index,window.current_frame.index,bool(window.view.analysis_tracks))))
+    qtbot.waitUntil(lambda:window.current_frame.index==11,timeout=4000)
+    playback_elapsed=time.monotonic()-started
+    assert playback_elapsed<2.5  # full inference would require at least 6.6s
+    assert len(set(ticks))>=6 and window.analysis_active
+    qtbot.waitUntil(lambda:not window.analysis_active,timeout=4000)
+    timer.stop()
+    result=window.analysis_result
+    assert result['status']=='completed' and result['dropped']>0
+    assert result['processed']+result['dropped']==12
+    assert window.current_frame.index==11  # delayed results never rewind the preview
+    assert observations and all(current>=analyzed and (current==analyzed or not boxes)
+                                for analyzed,current,boxes in observations)
+
+
 def test_missing_or_corrupt_model_is_explicit(qtbot,tmp_path,course):
     course.source={'kind':'file','path':'unused.mp4'}
     with pytest.raises(ValueError,match='未導入'):

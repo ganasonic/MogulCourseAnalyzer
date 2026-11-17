@@ -37,6 +37,13 @@ class AnalysisPanel(QScrollArea):
         self.model_hint.setWordWrap(True)
         layout.addWidget(self.model_hint)
         form=QFormLayout()
+        self.processing_mode=QComboBox()
+        self.processing_mode.addItem('再生優先（1倍速・解析は間引き）','realtime')
+        self.processing_mode.addItem('全フレーム解析（処理速度で再生）','all_frames')
+        form.addRow('分析方式',self.processing_mode)
+        mode_hint=QLabel('再生優先では未解析フレームが生じ、短い滑走やレーン変更を見逃す場合があります。\n人物枠は解析した同じフレームにだけ表示します。')
+        mode_hint.setWordWrap(True)
+        layout.addWidget(mode_hint)
         self.confidence=QDoubleSpinBox()
         self.confidence.setRange(.1,.95); self.confidence.setSingleStep(.05); self.confidence.setValue(.35)
         self.confidence.setToolTip('低いしきい値では小さい人物を拾いやすくなりますが、誤検出も増えます。確認・修正してください。')
@@ -46,6 +53,7 @@ class AnalysisPanel(QScrollArea):
         form.addRow(self.tiles)
         layout.addLayout(form)
         self.confidence.valueChanged.connect(self.settings_changed)
+        self.processing_mode.currentIndexChanged.connect(self.settings_changed)
         self.tiles.toggled.connect(self.settings_changed)
         self.model.textChanged.connect(self.settings_changed)
         self.stop=QPushButton('■ 分析停止')
@@ -122,10 +130,12 @@ class AnalysisPanel(QScrollArea):
 
     def config(self):
         return {'model_path':self.model.text(),'confidence':self.confidence.value(),'tiles':self.tiles.isChecked(),
+                'processing_mode':self.processing_mode.currentData(),
                 'tracker':'two-stage-predictive-IoU','backend':'OpenCV CPU'}
 
     def apply_config(self,config):
         self.loading=True
+        self.processing_mode.setCurrentIndex(max(0,self.processing_mode.findData(config.get('processing_mode','realtime'))))
         self.model.setText(config.get('model_path',str(DEFAULT_MODEL)))
         self.confidence.setValue(config.get('confidence',.35))
         self.tiles.setChecked(config.get('tiles',True))
@@ -144,7 +154,7 @@ class AnalysisPanel(QScrollArea):
 
     def set_active(self,active):
         self.stop.setEnabled(active)
-        for widget in [self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
+        for widget in [self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
                        self.save_review,self.merge,self.unmerge,self.add,self.video,self.interrupted]:
             widget.setEnabled(not active)
 
@@ -153,7 +163,7 @@ class AnalysisPanel(QScrollArea):
             self.data={'id':packet['analysis_id'],'calibration':self.window.workflow.calibration.to_dict(),'status':'running'}
         self.data['runs']=packet['runs']
         self.show_summary(packet['summary'])
-        self.progress.setText(f"解析 {packet['processed']}フレーム / ライブ未処理 {packet['dropped']}枚\n処理 {packet['inference_ms']:.0f}ms/枚 / 映像時刻 {packet['frame'].timestamp_ms/1000:.2f}秒")
+        self.progress.setText(f"解析 {packet['processed']}フレーム / 未解析 {packet['dropped']}枚\n処理 {packet['inference_ms']:.0f}ms/枚 / 最終解析時刻 {packet['frame'].timestamp_ms/1000:.2f}秒\n再生時刻は映像下の時計を参照してください。")
         self.fill_runs()
 
     def show_summary(self,summary):
@@ -210,7 +220,8 @@ class AnalysisPanel(QScrollArea):
             c=Calibration.from_dict(self.data['calibration'])
             self.show_summary(summarize(self.data['runs'],c.lanes))
             self.fill_runs()
-            self.progress.setText(f"{STATUS_LABELS.get(self.data['status'],self.data['status'])} / 解析 {self.data['frames_processed']}枚 / 未処理 {self.data['dropped_frames']}枚"+('\n'+self.data['error'] if self.data.get('error') else ''))
+            mode='再生優先' if self.data.get('config',{}).get('processing_mode')=='realtime' else '全フレーム／ライブ'
+            self.progress.setText(f"{mode} / {STATUS_LABELS.get(self.data['status'],self.data['status'])} / 解析 {self.data['frames_processed']}枚 / 未解析 {self.data['dropped_frames']}枚"+('\n'+self.data['error'] if self.data.get('error') else ''))
             self.loading=True
             previous=self.manual_lane.currentData()
             self.manual_lane.clear()
