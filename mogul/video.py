@@ -233,7 +233,8 @@ class VideoWorker(QThread):
             nonlocal live_index
             frame.source_id = request_id
             if source.live:
-                frame.timestamp_ms = (time.monotonic()-live_epoch)*1000
+                frame.timestamp_ms = ((source.started-live_epoch)*1000+frame.timestamp_ms
+                                      if hasattr(source,'started') else (time.monotonic()-live_epoch)*1000)
                 frame.index = live_index
                 live_index += 1
             if recorder:
@@ -243,6 +244,8 @@ class VideoWorker(QThread):
         def announce_source():
             metadata = dict(source.metadata)
             metadata['_request_id'] = request_id
+            if source.live:
+                metadata['_live_epoch'] = live_epoch
             self.opened.emit(metadata)
 
         def stop_recording():

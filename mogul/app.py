@@ -20,6 +20,10 @@ from .landmarks import layout_ready
 from .landmark_panel import LandmarkPanel
 from .course_map import CourseMap
 from .orientation import oriented_frame, rotate_calibration
+from .analysis_panel import AnalysisPanel
+from .analysis_worker import AnalysisWorker
+from .analysis_repository import AnalysisRepository
+from .landmarks import course_position
 
 
 def timecode(ms):
@@ -49,6 +53,8 @@ class MainWindow(QMainWindow):
         self.request_id = 0
         self.loading = False
         self.closing = False
+        self.analysis_job = None
+        self.analysis_result = None
         self.worker = VideoWorker(self)
         self._build()
         self.worker.frame_ready.connect(self.on_frame)
@@ -78,10 +84,10 @@ class MainWindow(QMainWindow):
         title.setStyleSheet('font-size: 20px; font-weight: 700; color: #8ed7ed;')
         header.addWidget(title)
         header.addStretch()
-        header.addWidget(QLabel('v1.8  •  Phase 2'))
+        header.addWidget(QLabel('v1.8  •  Phase 3'))
         root.addLayout(header)
         actions = QHBoxLayout()
-        self._button('映像ソースを変更…', self.select_source, actions)
+        self.source_button = self._button('映像ソースを変更…', self.select_source, actions)
         self._button('設定を保存  Ctrl+S', self.save, actions)
         self._button('設定を復元…', self.restore_dialog, actions)
         self._button('元に戻す  Ctrl+Z', self.undo, actions)
@@ -215,6 +221,8 @@ class MainWindow(QMainWindow):
         self.landmarks_panel = LandmarkPanel(self)
         self.right_tabs.addTab(self.landmarks_panel,'ゲート・コブ')
         self.right_tabs.addTab(self.course_map,'コースマップ')
+        self.analysis_panel = AnalysisPanel(self)
+        self.right_tabs.addTab(self.analysis_panel,'分析・結果')
         self.course_map.selected.connect(self.landmarks_panel.select_record)
         self.right_tabs.currentChanged.connect(self.right_tab_changed)
         splitter.addWidget(self.right_tabs)
@@ -224,8 +232,8 @@ class MainWindow(QMainWindow):
         self.prerequisites = QLabel('')
         self.prerequisites.setWordWrap(True)
         footer.addWidget(self.prerequisites, 1)
-        self.analyze_button = QPushButton('解析準備を保存')
-        self.analyze_button.setToolTip('位置設定を保存します。人物検出・人数解析はPhase 3で追加します。')
+        self.analyze_button = QPushButton('分析開始')
+        self.analyze_button.setToolTip('指定開始時刻から人物検出・追跡・人数集計を実行します。')
         self.analyze_button.clicked.connect(self.start_analysis)
         footer.addWidget(self.analyze_button)
         root.addLayout(footer)
@@ -255,6 +263,7 @@ class MainWindow(QMainWindow):
         ''')
 
     def initial_source(self):
+        self.analysis_panel.refresh_history()
         if self.database.exists() and QMessageBox.question(self, '前回の設定', '前回保存したキャリブレーションを復元しますか？') == QMessageBox.Yes:
             self.restore(self.database)
         else:
@@ -270,11 +279,20 @@ class MainWindow(QMainWindow):
         return self.save() if result == QMessageBox.Save else True
 
     def select_source(self):
+        if self.analysis_active:
+            self.notice.setText('分析を停止してから映像ソースを変更してください。')
+            return
         dialog = VideoSourceSelector(self)
         if dialog.exec() and self.maybe_save():
             self.open_source(dialog.spec, reset=True)
 
     def open_source(self, spec, reset=False):
+        if self.analysis_active:
+            self.notice.setText('分析を停止してから映像を開いてください。')
+            return
+        self.analysis_panel.review_analysis_id = None
+        self.analysis_panel.review_end_ms = None
+        self.view.analysis_tracks = []
         self.request_id += 1
         self.view.click_timer.stop()
         self.source_ok = False
@@ -288,6 +306,7 @@ class MainWindow(QMainWindow):
         self.record_button.setText('● MP4録画')
         self.view.clear_frame()
         if reset:
+            self.analysis_panel.reset_result()
             self.workflow.calibration = Calibration(source=spec,rotation=spec.get('rotation',0))
             self.workflow.history.clear()
             self.workflow.journal.clear()
@@ -309,7 +328,7 @@ class MainWindow(QMainWindow):
         self.metadata = metadata
         c = self.workflow.calibration
         recordings = c.source.get('recordings', [])
-        c.source = {k:v for k,v in metadata.items() if k != '_request_id'}
+        c.source = {k:v for k,v in metadata.items() if not k.startswith('_')}
         if recordings:
             c.source['recordings'] = recordings
         self.seek.setRange(0, int(metadata['duration_ms']))
@@ -323,6 +342,26 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def on_frame(self, frame):
+        if self.analysis_active:
+            if self.metadata.get('live') and frame.source_id == self.request_id:
+                self.analysis_job.submit(frame)
+            return
+        had_tracks = bool(self.view.analysis_tracks)
+        self.view.analysis_tracks = []
+        self.present_frame(frame)
+        if had_tracks:
+            self.view.redraw()
+            self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected)
+        panel = self.analysis_panel
+        if panel.review_analysis_id and frame.source_id == self.request_id:
+            self.view.analysis_tracks = AnalysisRepository(self.database).tracks_at(panel.review_analysis_id,frame.index)
+            self.view.redraw()
+            self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
+        if panel.review_end_ms is not None and frame.timestamp_ms >= panel.review_end_ms:
+            self.worker.command('play',False)
+            panel.review_end_ms = None
+
+    def present_frame(self, frame):
         if frame.source_id != self.request_id:
             return
         was_healthy = self.source_ok
@@ -413,9 +452,17 @@ class MainWindow(QMainWindow):
         self.middle_state.setText('確定済み ✓' if c.middle_confirmed else ('四隅を編集中' if c.middle else '未設定：映像上をドラッグ'))
         self.lanes_state.setText(' / '.join(f'{x.id} {"確定 ✓" if x.confirmed else "未確定"}' for x in c.lanes) or 'ミドルパートを確定してから設定')
         self.dirty_label.setText('● 未保存' if self.workflow.dirty else '保存済み / 変更なし')
-        self.analyze_button.setEnabled(self.controller.can_start(self.source_ok))
         reasons = self.workflow.reasons(self.source_ok)
-        self.prerequisites.setText('分析開始できない理由：' + ' ／ '.join(reasons) if reasons else '分析開始条件を満たしています')
+        try:
+            if c.middle_confirmed:
+                course_position(c,c.middle[0])
+        except ValueError as exc:
+            reasons.append(str(exc))
+        if not Path(self.analysis_panel.model.text()).is_file():
+            reasons.append('人物モデル未導入です（分析・結果タブを確認）')
+        self.analyze_button.setEnabled(not reasons and not self.analysis_active and not self.landmarks_panel.busy)
+        self.analyze_button.setText('分析中…' if self.analysis_active else '分析開始')
+        self.prerequisites.setText('分析中です。右側の「分析停止」で停止・保存できます。' if self.analysis_active else ('分析開始できない理由：' + ' ／ '.join(reasons) if reasons else '分析開始条件を満たしています'))
 
     def refresh(self):
         c = self.workflow.calibration
@@ -442,13 +489,24 @@ class MainWindow(QMainWindow):
         self.start_time.setEnabled(not live)
         self.view.redraw()
         self.landmarks_panel.refresh()
-        self.course_map.update_course(c,self.landmarks_panel.selected)
+        self.course_map.update_course(c,self.landmarks_panel.selected,self.view.analysis_tracks)
         self.refresh_state()
+        self.source_button.setEnabled(not self.analysis_active)
+        self.rotation.setEnabled(not self.analysis_active)
+        self.mirror.setEnabled(not self.analysis_active)
+        self.start_time.setEnabled(not self.analysis_active and not live)
+        for index in (0,1):
+            self.right_tabs.setTabEnabled(index,not self.analysis_active)
+        if self.analysis_active:
+            for control in (self.play_button,self.back_button,self.step_button,self.speed,self.seek):
+                control.setEnabled(False)
 
     def right_tab_changed(self,index):
+        if self.analysis_active:
+            return
         if index == 1:
             self.landmarks_panel.arm_tool()
-        elif index == 0 and self.view.mode == 'landmarks':
+        elif index == 0 and self.view.mode in ('landmarks','analysis'):
             self.view.set_mode('lane' if self.workflow.calibration.lanes else 'middle',max(0,self.lane_select.currentIndex()))
 
     def detect_middle(self):
@@ -539,13 +597,15 @@ class MainWindow(QMainWindow):
             self.input_label.setText(f'{name}  |  入力 {m["width"]} × {m["height"]}  →  表示 {self.view.width_px} × {self.view.height_px}  |  {m["fps"]:g} fps')
 
     def change_rotation(self):
-        if self.loading:
+        if self.loading or self.analysis_active:
             return
         rotation = self.rotation.currentData()
         if rotation == self.workflow.calibration.rotation:
             return
         self.view.click_timer.stop()
         self.view.drag = None
+        self.analysis_panel.review_analysis_id = None
+        self.view.analysis_tracks = []
         self.workflow.checkpoint()
         rotate_calibration(self.workflow.calibration,rotation)
         self.frames.clear()
@@ -557,7 +617,9 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def change_mirror(self, checked):
-        if not self.loading:
+        if not self.loading and not self.analysis_active:
+            self.analysis_panel.review_analysis_id = None
+            self.view.analysis_tracks = []
             self.workflow.checkpoint()
             c = self.workflow.calibration
             c.mirrored = checked
@@ -600,14 +662,20 @@ class MainWindow(QMainWindow):
         self.rotation.setCurrentIndex(self.rotation.findData(c.rotation))
         self.start_time.setValue(c.start_ms/1000)
         self.lane_count.setValue(len(c.lanes) or 2)
+        self.analysis_panel.apply_config(c.analysis_config)
         self.loading = False
 
     def undo(self):
+        if self.analysis_active:
+            self.notice.setText('分析を停止してから設定を戻してください。')
+            return
         self.view.click_timer.stop()
         self.view.drag = None
         previous_orientation = (self.workflow.calibration.rotation,self.workflow.calibration.mirrored)
         if self.workflow.undo():
             if previous_orientation != (self.workflow.calibration.rotation,self.workflow.calibration.mirrored):
+                self.analysis_panel.review_analysis_id = None
+                self.view.analysis_tracks = []
                 self.frames.clear()
                 self.last_sample = 0
             if not self.workflow.calibration.lanes:
@@ -633,11 +701,17 @@ class MainWindow(QMainWindow):
             return False
 
     def restore_dialog(self):
+        if self.analysis_active:
+            self.notice.setText('分析を停止してから復元してください。')
+            return
         path, _ = QFileDialog.getOpenFileName(self, 'キャリブレーションを復元', str(self.database.parent), 'SQLite (*.sqlite *.db);;すべてのファイル (*)')
         if path and self.maybe_save():
             self.restore(path)
 
     def restore(self, path):
+        if self.analysis_active:
+            self.notice.setText('分析を停止してから復元してください。')
+            return False
         try:
             session_id, calibration = EventRepository(path).load()
             self.database = Path(path)
@@ -646,6 +720,8 @@ class MainWindow(QMainWindow):
             self.workflow.history.clear()
             self.workflow.journal.clear()
             self.workflow.dirty = False
+            self.analysis_panel.reset_result()
+            self.analysis_panel.refresh_history()
             self.landmarks_panel.selected = None
             self.view.selected_landmark = None
             self.view.set_mode('landmarks' if calibration.control_gates or calibration.bumps else ('lane' if calibration.lanes else 'middle'))
@@ -661,21 +737,94 @@ class MainWindow(QMainWindow):
             return False
 
     def start_analysis(self):
+        if self.analysis_active or self.landmarks_panel.busy:
+            return
         if not self.controller.can_start(self.source_ok):
             self.notice.setText(' ／ '.join(self.workflow.reasons(self.source_ok)))
             return
-        if self.save():
-            self.notice.setText('解析準備の位置設定を保存しました。人物検出・人数解析はPhase 3で追加します。')
+        if not Path(self.analysis_panel.model.text()).is_file():
+            self.right_tabs.setCurrentIndex(3)
+            self.notice.setText('人物モデルを導入してください。')
+            return
+        self.workflow.checkpoint()
+        self.workflow.calibration.analysis_config = self.analysis_panel.config()
+        if not self.save():
+            return
+        self.worker.command('play',False if not self.metadata.get('live') else True)
+        self.view.click_timer.stop()
+        self.view.analysis_tracks = []
+        self.view.set_mode('analysis')
+        config = self.analysis_panel.config()
+        if self.metadata.get('live'):
+            config['live_start_after_ms'] = ((time.monotonic()-self.metadata['_live_epoch'])*1000
+                                            if '_live_epoch' in self.metadata else self.current_frame.timestamp_ms)
+        self.analysis_result = None
+        self.analysis_panel.reset_result()
+        self.analysis_panel.set_active(True)
+        self.analysis_job = AnalysisWorker(self.workflow.calibration,self.database,self.session_id,config,self.request_id,self)
+        self.analysis_job.phase.connect(self.analysis_panel.progress.setText)
+        self.analysis_job.packet.connect(self.on_analysis_packet)
+        self.analysis_job.completed.connect(self.on_analysis_completed)
+        self.analysis_job.finished.connect(self.finish_analysis)
+        self.analysis_job.start()
+        self.right_tabs.setCurrentIndex(3)
+        self.refresh()
+
+    @property
+    def analysis_active(self):
+        # Remain locked until the GUI has consumed completion and cleanup signals.
+        return self.analysis_job is not None
+
+    def stop_analysis(self):
+        if self.analysis_active:
+            self.analysis_job.requestInterruption()
+            self.analysis_panel.progress.setText('停止・保存中…')
+
+    def on_analysis_packet(self,packet):
+        if self.closing or packet['frame'].source_id != self.request_id:
+            return
+        self.present_frame(packet['frame'])
+        self.view.analysis_tracks = packet['tracks']
+        self.view.redraw()
+        self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,packet['tracks'])
+        self.analysis_panel.show_packet(packet)
+
+    def on_analysis_completed(self,result):
+        self.analysis_result = result
+        if result['id']:
+            try:
+                AnalysisRepository(self.database).attach_recordings(result['id'],self.workflow.calibration.source.get('recordings',[]))
+            except Exception as exc:
+                self.notice.setText('録画関連付けエラー: '+str(exc))
+
+    def finish_analysis(self):
+        job = self.analysis_job
+        self.analysis_job = None
+        job.deleteLater()
+        self.analysis_panel.set_active(False)
+        result = self.analysis_result or {'id':None,'status':'failed','error':'解析スレッドが予期せず終了しました'}
+        self.analysis_panel.refresh_history()
+        if result['id']:
+            self.analysis_panel.load(result['id'])
+            if not self.metadata.get('live') and self.current_frame is not None:
+                self.analysis_panel.review_analysis_id = result['id']
+                self.worker.command('seek',self.current_frame.timestamp_ms)
+        elif result.get('error'):
+            self.analysis_panel.progress.setText('分析エラー: '+result['error'])
+        self.notice.setText(('分析完了。自動推定を確認・修正してください。' if result['status']=='completed' else '分析を停止しました。') if not result.get('error') else '分析エラー: '+result['error'])
+        self.refresh()
 
     def closeEvent(self, event):
         if not self.maybe_save():
             event.ignore()
             return
+        if self.analysis_active:
+            self.stop_analysis()
         self.closing = True
         self.worker.requestInterruption()
         if self.landmarks_panel.busy:
             self.landmarks_panel.task.requestInterruption()
-        if not self.worker.wait(100) or self.landmarks_panel.busy:
+        if not self.worker.wait(100) or self.landmarks_panel.busy or self.analysis_active:
             # Keep the Qt event loop responsive while a pending native read finishes.
             self.setEnabled(False)
             self.notice.setText('映像入力と録画を終了しています…')
@@ -687,7 +836,7 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def finish_close(self):
-        if not self.worker.isRunning() and not self.landmarks_panel.busy:
+        if not self.worker.isRunning() and not self.landmarks_panel.busy and not self.analysis_active:
             self.close_timer.stop()
             self.workflow.dirty = False
             self.close()

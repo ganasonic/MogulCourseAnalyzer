@@ -165,7 +165,7 @@ def test_phase2_snapshot_tables_and_v1_backup(tmp_path,course):
     repo.save(course,session)
     assert Path(str(path)+'.v1.bak').is_file()
     with sqlite3.connect(path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert db.execute('PRAGMA user_version').fetchone()[0] == EventRepository.SCHEMA_VERSION
         assert db.execute('SELECT COUNT(*) FROM control_gates').fetchone()[0] == 6
         assert db.execute('SELECT COUNT(*) FROM bumps').fetchone()[0] == 4
     _,restored = repo.load()
@@ -257,7 +257,8 @@ def test_gui_add_drag_confirm_map_and_save(qtbot,window):
         panel.bump_side.setCurrentIndex(panel.bump_side.findData('R' if lane == 'B' else 'UNKNOWN'))
         panel.confirm_bump()
     panel.confirm_bumps.click()
-    assert panel.c.bumps_confirmed and window.analyze_button.isEnabled()
+    assert panel.c.bumps_confirmed and window.controller.can_start(window.source_ok)
+    assert window.analyze_button.isEnabled() == Path(window.analysis_panel.model.text()).is_file()
     assert panel.c.bumps[1].label == 'B-3-1-R'
     window.course_map.selected.emit('bump',panel.c.bumps[1].id)
     assert view.selected_landmark == ('bump',panel.c.bumps[1].id)
@@ -302,7 +303,7 @@ def test_gui_restore_phase2_with_actual_video(qtbot,window,tmp_path):
     assert window.landmarks_panel.gates.count() == 3
     assert window.landmarks_panel.bumps.count() == 2
     assert window.view.mode == 'landmarks' and window.right_tabs.currentIndex() == 1
-    assert window.analyze_button.isEnabled()
+    assert window.analyze_button.isEnabled() == Path(window.analysis_panel.model.text()).is_file()
 
 
 def test_bump_gui_move_resize_delete_undo_and_map_click(qtbot,window):

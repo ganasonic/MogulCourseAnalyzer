@@ -51,6 +51,7 @@ class CalibrationView(QGraphicsView):
         self.selected_landmark = None
         self.landmark_markers = []
         self.pending_bump_polygon = None
+        self.analysis_tracks = []
         self.drag = None
         self.press = None
         self.zoom_factor = 1.0
@@ -225,6 +226,21 @@ class CalibrationView(QGraphicsView):
                 self.overlays.append(item)
                 self.handles.append((i, item))
         self._draw_landmarks()
+        self._draw_tracks()
+
+    def _draw_tracks(self):
+        for track in self.analysis_tracks:
+            x1,y1,x2,y2=track['bbox']
+            pen=QPen(QColor('#8bff72'),2)
+            pen.setCosmetic(True)
+            item=self.scene().addRect(x1*self.width_px,y1*self.height_px,(x2-x1)*self.width_px,(y2-y1)*self.height_px,pen)
+            item.setZValue(15)
+            text=self.scene().addText(f"T{track['track_id']} / {track['run_id'][:6]} / {track.get('lane_id') or '?'} / {track['confidence']:.2f}")
+            text.setDefaultTextColor(QColor('#8bff72'))
+            text.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+            text.setPos(x1*self.width_px,y1*self.height_px-22)
+            text.setZValue(15)
+            self.overlays.extend([item,text])
 
     def select_landmark(self, kind, identifier):
         self.selected_landmark = (kind,identifier)
@@ -289,6 +305,9 @@ class CalibrationView(QGraphicsView):
             self.panning = True
             self.pan_position = event.position()
             self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        if self.mode == 'analysis':
             event.accept()
             return
         if event.button() != Qt.LeftButton or not self.has_frame:
@@ -410,6 +429,9 @@ class CalibrationView(QGraphicsView):
         self.changed.emit()
 
     def mouseDoubleClickEvent(self, event):
+        if self.mode == 'analysis':
+            event.accept()
+            return
         if self.space_pressed or self.panning:
             event.accept()
             return

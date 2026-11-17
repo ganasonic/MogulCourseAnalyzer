@@ -15,7 +15,7 @@ class CourseMap(QGraphicsView):
         self.setRenderHint(QPainter.Antialiasing)
         self.setMinimumWidth(300)
 
-    def update_course(self,c,selected=None):
+    def update_course(self,c,selected=None,tracks=None):
         self.scene().clear()
         if not c.middle:
             self.scene().addText('ミドルパート設定後に表示します').setDefaultTextColor(QColor('white'))
@@ -58,6 +58,13 @@ class CourseMap(QGraphicsView):
         for bump in c.bumps:
             polygon(bump.polygon,'#ffbe55')
             marker('bump',bump,bump.center,bump.label,'#ffbe55')
+        for track in tracks or []:
+            p=position(track['point'])
+            item=self.scene().addEllipse(-5,-5,10,10,QPen(QColor('#8bff72')),QColor('#8bff72'))
+            item.setPos(p); item.setZValue(10)
+            text=self.scene().addText(f"T{track['track_id']} / {track.get('lane_id') or '?'}")
+            text.setDefaultTextColor(QColor('#8bff72'))
+            text.setPos(p+QPointF(8,-12)); text.setZValue(10)
         self.scene().setSceneRect(self.scene().itemsBoundingRect().adjusted(-15,-15,15,15))
         self.fitInView(self.sceneRect(),Qt.KeepAspectRatio)
 

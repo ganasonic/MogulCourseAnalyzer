@@ -7,7 +7,7 @@ from .app import MainWindow
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Mogul Course Analyzer v1.8 Phase 2')
+    parser = argparse.ArgumentParser(description='Mogul Course Analyzer v1.8 Phase 3')
     parser.add_argument('--video', help='起動時に読み込む動画')
     parser.add_argument('--rotation',type=int,choices=[0,90,180,270],default=0,help='メタデータ補正後に追加する時計回りの回転角')
     parser.add_argument('--database', default='data/calibration.sqlite')

@@ -10,7 +10,7 @@ from .models import Calibration
 
 
 class EventRepository:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, path):
         self.path = path
@@ -27,10 +27,10 @@ class EventRepository:
         session_id = session_id or str(uuid4())
         with closing(self._connect()) as db, db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, self.SCHEMA_VERSION):
+            if version not in (0, 1, 2, self.SCHEMA_VERSION):
                 raise ValueError('未対応のデータベース形式です')
-            if version == 1:
-                backup_path = Path(str(self.path) + '.v1.bak')
+            if version in (1,2):
+                backup_path = Path(str(self.path) + f'.v{version}.bak')
                 if not backup_path.exists():
                     with closing(sqlite3.connect(backup_path)) as backup:
                         db.backup(backup)
@@ -41,6 +41,10 @@ class EventRepository:
                 CREATE TABLE IF NOT EXISTS calibration_edits(id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), created_at TEXT NOT NULL, data_json TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS control_gates(calibration_id INTEGER NOT NULL REFERENCES calibrations(id), id TEXT NOT NULL, data_json TEXT NOT NULL, PRIMARY KEY(calibration_id,id));
                 CREATE TABLE IF NOT EXISTS bumps(calibration_id INTEGER NOT NULL REFERENCES calibrations(id), id TEXT NOT NULL, data_json TEXT NOT NULL, PRIMARY KEY(calibration_id,id));
+                CREATE TABLE IF NOT EXISTS analysis_sessions(id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),created_at TEXT NOT NULL,status TEXT NOT NULL,data_json TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runs(analysis_id TEXT NOT NULL REFERENCES analysis_sessions(id),id TEXT NOT NULL,data_json TEXT NOT NULL,PRIMARY KEY(analysis_id,id));
+                CREATE TABLE IF NOT EXISTS tracks(analysis_id TEXT NOT NULL REFERENCES analysis_sessions(id),frame_index INTEGER NOT NULL,track_id INTEGER NOT NULL,timestamp_ms REAL NOT NULL,data_json TEXT NOT NULL,PRIMARY KEY(analysis_id,frame_index,track_id));
+                CREATE TABLE IF NOT EXISTS run_reviews(id INTEGER PRIMARY KEY,analysis_id TEXT NOT NULL REFERENCES analysis_sessions(id),run_id TEXT NOT NULL,created_at TEXT NOT NULL,reason TEXT NOT NULL,before_json TEXT,after_json TEXT NOT NULL);
             '''
             for statement in schema.split(';'):
                 if statement.strip():
@@ -60,7 +64,7 @@ class EventRepository:
 
     def load(self):
         with closing(self._connect()) as db:
-            if db.execute('PRAGMA user_version').fetchone()[0] not in (1,self.SCHEMA_VERSION):
+            if db.execute('PRAGMA user_version').fetchone()[0] not in (1,2,self.SCHEMA_VERSION):
                 raise ValueError('未対応のデータベース形式です')
             row = db.execute('SELECT session_id,data_json FROM calibrations ORDER BY id DESC LIMIT 1').fetchone()
         if not row:

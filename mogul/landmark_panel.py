@@ -177,6 +177,9 @@ class LandmarkPanel(QScrollArea):
             self.select_record('bump',item.data(Qt.UserRole))
 
     def select_record(self,kind,identifier):
+        if self.window.analysis_active:
+            self.status.setText('分析を停止してから位置を編集してください。')
+            return
         self.selected = (kind,identifier)
         if self.window.view.selected_landmark != self.selected or self.window.view.mode != 'landmarks':
             self.window.view.select_landmark(kind,identifier)

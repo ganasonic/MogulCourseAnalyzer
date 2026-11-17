@@ -1,5 +1,7 @@
 # Mogul Course Analyzer v1.8 — Phase 2 実装・検証報告
 
+この文書はPhase 2時点の履歴です。現在の人物解析・人数集計は[Phase 3報告](PHASE3_REPORT.md)を参照してください。
+
 実施日：2026-11-16（日本時間）
 
 ## 結果
