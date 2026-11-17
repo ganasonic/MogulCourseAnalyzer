@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
         self.lane_name.editingFinished.connect(self.rename_lane)
         lanes_layout.addWidget(self.lane_name)
         self._button('選択レーンの色…', self.choose_lane_color, lanes_layout)
-        lanes_hint = QLabel('各レーンを選択して四隅を補正・確定します。\n外側の四隅も移動可能。ゲート側との余白を設定できます。\n内部境界は隣接レーンと共有します。\n均等分割は手動初期配置であり、AI検出ではありません。')
+        lanes_hint = QLabel('各レーンの四隅を独立して補正・確定します。\n隣のレーンは連動しません。レーン間に空白を残せます。\n空白は解析・人数集計の対象外です。重なりは指定できません。\n均等分割は手動初期配置であり、AI検出ではありません。')
         lanes_hint.setWordWrap(True)
         lanes_layout.addWidget(lanes_hint)
         self.lanes_state = QLabel('未設定')

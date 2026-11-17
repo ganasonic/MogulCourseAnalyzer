@@ -101,7 +101,7 @@ def test_invalid_middle_and_resize(qtbot, view):
 
 
 @pytest.mark.parametrize('count', [2, 3, 4])
-def test_shared_lanes(calibration, count):
+def test_independent_lanes_start_with_equal_split(calibration, count):
     calibration.configure_lanes(count)
     assert calibration.lanes_valid()
     polygons = [calibration.lane_polygon(i) for i in range(count)]
@@ -112,9 +112,11 @@ def test_shared_lanes(calibration, count):
         assert overlap(polygons[i], polygons[i+1]) < 2e-6
     for lane in calibration.lanes:
         lane.confirmed = True
+    neighbor=calibration.lane_polygon(1)
     assert calibration.move_lane_corner(0, 1, [.45 if count == 2 else .34, .12])
-    assert calibration.lane_polygon(0)[1] == calibration.lane_polygon(1)[0]
-    assert not calibration.lanes[0].confirmed and not calibration.lanes[1].confirmed
+    assert calibration.lane_polygon(1)==neighbor
+    assert calibration.lane_polygon(0)[1] != calibration.lane_polygon(1)[0]
+    assert not calibration.lanes[0].confirmed and calibration.lanes[1].confirmed
     assert not calibration.move_lane_corner(0, 0, [.1, .1])
     old = deepcopy(calibration.boundaries)
     assert not calibration.move_lane_corner(0, 1, [.99, .12])
@@ -129,9 +131,11 @@ def test_lane_gui_drag_and_confirmation(qtbot, view):
     c.configure_lanes(3)
     view.set_mode('lane', 0)
     before = c.lane_polygon(0)[1]
-    drag(qtbot, view, before, (.42, .12))
-    assert c.lane_polygon(0)[1] == c.lane_polygon(1)[0]
-    np.testing.assert_allclose(c.lane_polygon(0)[1], [.42, .12], atol=.005)
+    neighbor=c.lane_polygon(1)
+    drag(qtbot, view, before, (.36, .12))
+    assert c.lane_polygon(1)==neighbor
+    assert c.lane_polygon(0)[1] != c.lane_polygon(1)[0]
+    np.testing.assert_allclose(c.lane_polygon(0)[1], [.36, .12], atol=.005)
     for i in range(3):
         view.set_mode('lane', i)
         click_confirm(qtbot, view)

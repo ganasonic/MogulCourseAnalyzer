@@ -100,7 +100,7 @@ def test_margin_save_restore_and_legacy_migration(tmp_path):
     with sqlite3.connect(repo.path) as db:
         db.execute('UPDATE calibrations SET data_json=?', (json.dumps(legacy),))
     _, migrated = repo.load()
-    assert migrated.boundary_format == 2 and migrated.lanes_valid()
+    assert migrated.boundary_format == 3 and migrated.lanes_valid()
     assert migrated.lane_polygon(0)[0] == MIDDLE[0]
     assert migrated.move_lane_corner(0,0,[.25,.18])
     repo.save(migrated, session)

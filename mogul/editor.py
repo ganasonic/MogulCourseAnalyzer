@@ -213,7 +213,7 @@ class CalibrationView(QGraphicsView):
         labels=not analyzing or self.show_analysis_geometry
         opacity=min(c.opacity,.08) if analyzing else c.opacity
         if c.middle:
-            self._polygon(c.middle, c.middle_color, opacity, c.middle_confirmed)
+            self._polygon(c.middle, c.middle_color, 0 if c.lanes else opacity, c.middle_confirmed)
         for i, lane in enumerate(c.lanes):
             self._polygon(c.lane_polygon(i), lane.color, opacity, lane.confirmed)
             if not labels:

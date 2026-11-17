@@ -59,7 +59,7 @@ class AnalyticsEngine:
         # Keep the current lane near a shared edge; suppress single-frame jitter.
         if current:
             index=next((i for i,l in enumerate(self.c.lanes) if l.id==current),None)
-            if index is not None and cv2.pointPolygonTest(np.array(self.c.lane_polygon(index),np.float32),tuple(map(float,point)),True)>=-.003:
+            if index is not None and contains(self.c.lane_polygon(index),point):
                 return current
         return next((lane.id for i,lane in enumerate(self.c.lanes) if contains(self.c.lane_polygon(i),point)),None)
 

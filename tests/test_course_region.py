@@ -13,6 +13,7 @@ def course():
     c.move_lane_corner(0,0,[.2,.15]); c.move_lane_corner(0,3,[.2,.85])
     c.move_lane_corner(1,1,[.8,.15]); c.move_lane_corner(1,2,[.8,.85])
     c.move_lane_corner(0,1,[.5,.15]); c.move_lane_corner(0,2,[.5,.85])
+    c.move_lane_corner(1,0,[.5,.15]); c.move_lane_corner(1,3,[.5,.85])
     return c
 
 

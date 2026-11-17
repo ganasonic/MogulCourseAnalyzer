@@ -67,10 +67,12 @@ def gate_position_valid(c, gate):
     # Only the two OUTER lane edges are control gate boundaries. Internal lane
     # separators are never used. No fixed distance from a lane is imposed.
     if gate.side == 'LEFT':
-        edge = c.boundaries[0]
+        polygon = c.lane_polygon(0)
+        edge = [polygon[0],polygon[3]]
         return cross(edge[0], edge[1], gate.point) > 1e-7
     if gate.side == 'RIGHT':
-        edge = c.boundaries[-1]
+        polygon = c.lane_polygon(len(c.lanes)-1)
+        edge = [polygon[1],polygon[2]]
         return cross(edge[0], edge[1], gate.point) < -1e-7
     return False
 

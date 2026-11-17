@@ -34,11 +34,11 @@ class CourseMap(QGraphicsView):
             return QPointF(20+x*320,45+y*540)
         text = self.scene().addText(title)
         text.setDefaultTextColor(QColor('white'))
-        def polygon(points,color):
+        def polygon(points,color,opacity=.25):
             fill = QColor(color)
-            fill.setAlphaF(.25)
+            fill.setAlphaF(opacity)
             self.scene().addPolygon(QPolygonF([position(p) for p in points]),QPen(QColor(color)),fill)
-        polygon(c.middle,c.middle_color)
+        polygon(c.middle,c.middle_color,0 if c.lanes else .25)
         for i,lane in enumerate(c.lanes):
             polygon(c.lane_polygon(i),lane.color)
         def marker(kind,item,point,label,color):
