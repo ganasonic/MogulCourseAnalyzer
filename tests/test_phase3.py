@@ -581,3 +581,19 @@ def test_shared_boundary_small_jitter_does_not_create_departure(course):
     engine=transit_sequence(course,[(.49,.02),(.49,.08),(.49,.2),(.4995,.3),(.5005,.4),(.4995,.5),(.49,.65),(.49,.8),(.49,.94),(.49,.98)])
     run=engine.snapshot()[0]
     assert not run['events'] and run['completed_lane']=='A'
+
+
+def test_worker_excludes_staff_in_middle_margin_and_guard(qtbot,tmp_path,course):
+    class StaffDetector(FixtureDetector):
+        def detect(self,*args,**kwargs):
+            return super().detect(*args,**kwargs)+[detection(.82,.4),detection(.93,.4)]
+    course.source={'kind':'file','path':'fixture.mp4'}
+    job=AnalysisWorker(course,tmp_path/'course-only.sqlite',None,{'model_path':'fixture'},1,
+                       detector_factory=StaffDetector,source_factory=FixtureSource)
+    packets=[]; results=[]
+    job.packet.connect(packets.append);job.completed.connect(results.append);job.start()
+    qtbot.waitUntil(lambda:bool(results),timeout=5000)
+    assert job.wait(1000) and results[0]['status']=='completed'
+    assert packets and all(p['detection_count']==1 for p in packets)
+    assert all(r['point'][0]<.8 for p in packets for r in p['tracks']+p['overlays'])
+    assert len(packets[-1]['runs'])==1

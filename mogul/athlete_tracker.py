@@ -99,7 +99,7 @@ class AthleteTracker:
                     costs[i,j]=.7*(1-intersection)+.3*min(1,distance/gate)
         return [(i,j) for i,j in assignment(costs) if costs[i,j]<1]
 
-    def update(self,detections,timestamp):
+    def update(self,detections,timestamp,can_start=None):
         self.tracks=[t for t in self.tracks if timestamp-t.timestamp_ms<=self.max_lost_ms]
         high=[d for d in detections if d.confidence>=self.high]
         low=[d for d in detections if self.low<=d.confidence<self.high]
@@ -120,6 +120,8 @@ class AthleteTracker:
                 visible.append(track)
         for j,detection in enumerate(high):
             if j in {b for _,b in high_matches}:
+                continue
+            if can_start is not None and not can_start(detection.foot):
                 continue
             track=Track(self.next_id,list(detection.bbox),detection.confidence,timestamp)
             self.next_id+=1

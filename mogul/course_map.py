@@ -3,6 +3,7 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem
 from .landmarks import course_position
+from .course_region import in_course
 
 
 class CourseMap(QGraphicsView):
@@ -60,6 +61,8 @@ class CourseMap(QGraphicsView):
             polygon(bump.polygon,'#ffbe55')
             marker('bump',bump,bump.center,bump.label,'#ffbe55')
         for track in tracks or []:
+            if not in_course(c,track['point']):
+                continue
             p=position(track['point'])
             item=self.scene().addEllipse(-5,-5,10,10,QPen(QColor('#8bff72')),QColor('#8bff72'))
             item.setPos(p); item.setZValue(10)

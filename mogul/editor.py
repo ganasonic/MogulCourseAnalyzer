@@ -6,6 +6,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsScene, QGraphicsView
 from .geometry import contains, valid_quad
 from .landmarks import ControlGateEditor, BumpRegistry, layout_ready
+from .course_region import in_course
 
 
 class MiddlePartEditor:
@@ -265,6 +266,8 @@ class CalibrationView(QGraphicsView):
     def _draw_tracks(self):
         for track in self.analysis_tracks:
             x1,y1,x2,y2=track['bbox']
+            if not in_course(self.calibration,[(x1+x2)/2,y2]):
+                continue
             pen=QPen(QColor('#8bff72'),2,Qt.DashLine if track.get('interpolated') or track.get('tentative') else Qt.SolidLine)
             pen.setCosmetic(True)
             item=self.scene().addRect(x1*self.width_px,y1*self.height_px,(x2-x1)*self.width_px,(y2-y1)*self.height_px,pen)

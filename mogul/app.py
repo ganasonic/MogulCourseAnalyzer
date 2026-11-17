@@ -25,6 +25,7 @@ from .analysis_worker import AnalysisWorker
 from .analysis_repository import AnalysisRepository
 from .landmarks import course_position
 from .preview_tracking import PreviewTracking
+from .course_region import CourseRegion,in_course
 
 
 def timecode(ms):
@@ -401,7 +402,8 @@ class MainWindow(QMainWindow):
             self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected)
         panel = self.analysis_panel
         if panel.review_analysis_id and frame.source_id == self.request_id:
-            self.view.analysis_tracks = AnalysisRepository(self.database).tracks_at(panel.review_analysis_id,frame.index)
+            self.view.analysis_tracks = [r for r in AnalysisRepository(self.database).tracks_at(panel.review_analysis_id,frame.index)
+                                         if in_course(self.workflow.calibration,r['point'])]
             self.update_analysis_events(panel.data.get('runs',[]) if panel.data else [],frame.timestamp_ms)
             self.view.redraw()
             self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
@@ -815,7 +817,7 @@ class MainWindow(QMainWindow):
         self.view.analysis_tracks = []
         self.view.set_mode('analysis')
         self.view.analysis_events = []
-        self.preview_tracking = PreviewTracking()
+        self.preview_tracking = PreviewTracking(region=CourseRegion(self.workflow.calibration))
         self.lane_total_values = {}
         self.update_lane_totals()
         config = self.analysis_panel.config()

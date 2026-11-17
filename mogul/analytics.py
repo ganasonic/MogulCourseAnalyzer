@@ -6,6 +6,7 @@ import numpy as np
 from .geometry import contains,intersects
 from .landmarks import course_position
 from .transit import LaneTransit
+from .course_region import CourseRegion
 
 
 @dataclass
@@ -52,6 +53,7 @@ class AnalyticsEngine:
         self.track_runs={}
         self.relink_ms=relink_ms
         self.transit=LaneTransit(calibration)
+        self.region=CourseRegion(calibration)
 
     def lane_for(self,point,current=None):
         # Keep the current lane near a shared edge; suppress single-frame jitter.
@@ -91,10 +93,8 @@ class AnalyticsEngine:
         claimed=set()
         for track in tracks:
             point=track.foot
-            if track.id not in self.track_runs and not contains(self.c.middle,point):
-                x,y=course_position(self.c,point)
-                if not (-.1<=x<=1.1 and -.15<=y<=1.15):
-                    continue
+            if track.id not in self.track_runs and not self.region.can_start(point):
+                continue
             run=self._run(track,timestamp,visible_ids,claimed)
             claimed.add(run.id)
             previous=run.point[:]

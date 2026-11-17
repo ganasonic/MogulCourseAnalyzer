@@ -12,6 +12,7 @@ from .landmarks import course_position
 from .orientation import oriented_frame
 from .video import FileVideoSource
 from .athlete_tracker import iou
+from .course_region import CourseRegion
 
 
 class AnalysisWorker(QThread):
@@ -67,6 +68,7 @@ class AnalysisWorker(QThread):
             # requires >=3 observations in AnalyticsEngine; early boxes are tentative.
             tracker=AthleteTracker(high=self.config.get('confidence',.35),min_hits=1)
             engine=AnalyticsEngine(self.calibration)
+            region=CourseRegion(self.calibration)
             course_position(self.calibration,self.calibration.middle[0])
             identifier=repository.begin(self.calibration,self.session_id,self.config,detector.sha256)
             live=self.calibration.source.get('kind')=='uvc'
@@ -99,11 +101,22 @@ class AnalysisWorker(QThread):
                     continue
                 image=oriented_frame(frame.image,self.calibration.rotation,self.calibration.mirrored)
                 tick=time.perf_counter()
-                detections=detector.detect(image,self.calibration.middle,tiled=self.config.get('tiles',True))
-                visible=tracker.update(detections,frame.timestamp_ms)
+                if hasattr(detector,'detect_course'):
+                    detections=detector.detect_course(image,region,tiled=self.config.get('tiles',True))
+                else:
+                    detections=detector.detect(image,self.calibration.middle,tiled=self.config.get('tiles',True))
+                detections=[d for d in detections if region.can_observe(d.foot)]
+                visible=tracker.update(detections,frame.timestamp_ms,can_start=region.can_start)
                 records=engine.update(visible,frame.timestamp_ms,frame.index)
-                overlays=list(records)
+                overlays=[r for r in records if region.contains(r['point'])]
+                # Once an already tracked skier has crossed out, retain the event
+                # evidence, then stop spending inference/tracker work on that ID.
+                retired={t.id for t in visible if t.id in engine.track_runs and not region.contains(t.foot) and
+                    engine.runs[engine.track_runs[t.id]].transit_state in ('completed','course_out','uncertain')}
+                tracker.tracks=[t for t in tracker.tracks if t.id not in retired]
                 for detection in detections:
+                    if not region.contains(detection.foot):
+                        continue
                     if detection.confidence<self.config.get('confidence',.35):
                         continue
                     if any(iou(detection.bbox,r['bbox'])>.3 for r in records):
@@ -116,7 +129,7 @@ class AnalysisWorker(QThread):
                 repository.write_frame(identifier,records,runs,processed,self.dropped,last_timestamp)
                 frame.source_id=self.request_id
                 self.packet.emit({'analysis_id':identifier,'frame':frame,'tracks':records,'overlays':overlays,
-                    'detection_count':sum(d.confidence>=self.config.get('confidence',.35) for d in detections),'runs':runs,
+                    'detection_count':sum(region.contains(d.foot) and d.confidence>=self.config.get('confidence',.35) for d in detections),'runs':runs,
                     'summary':summarize(runs,self.calibration.lanes),'processed':processed,'dropped':self.dropped,
                     'inference_ms':(time.perf_counter()-tick)*1000,'elapsed_seconds':time.perf_counter()-start})
         except Exception as exc:

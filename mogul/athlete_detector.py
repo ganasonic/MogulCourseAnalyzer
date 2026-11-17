@@ -43,6 +43,20 @@ class AthleteDetector:
         self.anchors=np.concatenate(anchors)
         self.strides=np.asarray(strides)[:,None]
 
+    def detect_course(self,image,region,tiled=False):
+        crop,(x0,y0)=region.crop(image)
+        height,width=image.shape[:2]
+        ch,cw=crop.shape[:2]
+        detections=self.detect(crop,[[0,0],[1,0],[1,1],[0,1]],tiled=tiled)
+        result=[]
+        for detection in detections:
+            x1,y1,x2,y2=detection.bbox
+            bbox=[(x0+x1*cw)/width,(y0+y1*ch)/height,(x0+x2*cw)/width,(y0+y2*ch)/height]
+            mapped=Detection(bbox,detection.confidence)
+            if region.can_observe(mapped.foot):
+                result.append(mapped)
+        return result
+
     def detect(self,image,middle=None,tiled=False):
         result=self._single(image,middle)
         if tiled and middle:
