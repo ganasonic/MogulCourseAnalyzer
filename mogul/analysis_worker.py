@@ -11,6 +11,7 @@ from .analytics import AnalyticsEngine,summarize
 from .landmarks import course_position
 from .orientation import oriented_frame
 from .video import FileVideoSource
+from .athlete_tracker import iou
 
 
 class AnalysisWorker(QThread):
@@ -62,7 +63,9 @@ class AnalysisWorker(QThread):
         try:
             self.phase.emit('人物モデルを検証・読み込み中…')
             detector=self.detector_factory(self.config['model_path'],threshold=.1)
-            tracker=AthleteTracker(high=self.config.get('confidence',.35))
+            # Preserve entrance evidence from the first detection. Counting still
+            # requires >=3 observations in AnalyticsEngine; early boxes are tentative.
+            tracker=AthleteTracker(high=self.config.get('confidence',.35),min_hits=1)
             engine=AnalyticsEngine(self.calibration)
             course_position(self.calibration,self.calibration.middle[0])
             identifier=repository.begin(self.calibration,self.session_id,self.config,detector.sha256)
@@ -99,12 +102,21 @@ class AnalysisWorker(QThread):
                 detections=detector.detect(image,self.calibration.middle,tiled=self.config.get('tiles',True))
                 visible=tracker.update(detections,frame.timestamp_ms)
                 records=engine.update(visible,frame.timestamp_ms,frame.index)
+                overlays=list(records)
+                for detection in detections:
+                    if detection.confidence<self.config.get('confidence',.35):
+                        continue
+                    if any(iou(detection.bbox,r['bbox'])>.3 for r in records):
+                        continue
+                    overlays.append({'bbox':detection.bbox,'confidence':detection.confidence,'track_id':'候補',
+                                     'run_id':'未確定','lane_id':None,'point':detection.foot,'tentative':True})
                 processed+=1
                 last_timestamp=frame.timestamp_ms
                 runs=engine.snapshot()
                 repository.write_frame(identifier,records,runs,processed,self.dropped,last_timestamp)
                 frame.source_id=self.request_id
-                self.packet.emit({'analysis_id':identifier,'frame':frame,'tracks':records,'runs':runs,
+                self.packet.emit({'analysis_id':identifier,'frame':frame,'tracks':records,'overlays':overlays,
+                    'detection_count':sum(d.confidence>=self.config.get('confidence',.35) for d in detections),'runs':runs,
                     'summary':summarize(runs,self.calibration.lanes),'processed':processed,'dropped':self.dropped,
                     'inference_ms':(time.perf_counter()-tick)*1000,'elapsed_seconds':time.perf_counter()-start})
         except Exception as exc:

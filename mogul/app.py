@@ -24,6 +24,7 @@ from .analysis_panel import AnalysisPanel
 from .analysis_worker import AnalysisWorker
 from .analysis_repository import AnalysisRepository
 from .landmarks import course_position
+from .preview_tracking import PreviewTracking
 
 
 def timecode(ms):
@@ -44,6 +45,9 @@ class MainWindow(QMainWindow):
         self.source_ok = False
         self.metadata = {}
         self.current_frame = None
+        self.preview_tracking = PreviewTracking()
+        self.lane_total_values = {}
+        self.lane_total_signature = None
         self.frames = deque(maxlen=4)
         self.last_sample = 0
         self.playing = False
@@ -57,7 +61,11 @@ class MainWindow(QMainWindow):
         self.analysis_result = None
         self.worker = VideoWorker(self)
         self._build()
-        self.worker.frame_ready.connect(self.on_frame)
+        self.pending_preview=None
+        self.preview_timer=QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.timeout.connect(self.flush_preview)
+        self.worker.frame_ready.connect(self.queue_preview_frame)
         self.worker.opened.connect(self.on_opened)
         self.worker.status.connect(self.on_status)
         self.worker.recording.connect(self.on_recording)
@@ -118,6 +126,9 @@ class MainWindow(QMainWindow):
         self.zoom_label = QLabel('全体比 100%')
         self.view.zoom_changed.connect(lambda factor:self.zoom_label.setText(f'全体比 {factor*100:.0f}%'))
         display_controls.addWidget(self.zoom_label)
+        self.geometry_labels=QCheckBox('分析中も設定マーカーを表示')
+        self.geometry_labels.toggled.connect(self.change_analysis_geometry)
+        display_controls.addWidget(self.geometry_labels)
         display_controls.addStretch()
         video_layout.addLayout(display_controls)
         video_layout.addWidget(self.view, 1)
@@ -138,6 +149,9 @@ class MainWindow(QMainWindow):
         self.seek.setRange(0, 0)
         self.seek.sliderReleased.connect(lambda: self.worker.command('seek', self.seek.value()))
         video_layout.addWidget(self.seek)
+        video_layout.addWidget(QLabel('上端から入り、同じレーンの下端へ抜けた人数（自動推定・要確認）'))
+        self.lane_totals=QHBoxLayout()
+        video_layout.addLayout(self.lane_totals)
         recording = QHBoxLayout()
         self.record_button = self._button('● MP4録画', self.toggle_record, recording)
         self.record_label = QLabel('UVC入力で録画できます')
@@ -291,8 +305,13 @@ class MainWindow(QMainWindow):
             self.notice.setText('分析を停止してから映像を開いてください。')
             return
         self.analysis_panel.review_analysis_id = None
+        self.pending_preview=None
+        self.preview_timer.stop()
         self.analysis_panel.review_end_ms = None
         self.view.analysis_tracks = []
+        self.view.analysis_events = []
+        self.course_map.analysis_events = []
+        self.preview_tracking = PreviewTracking()
         self.request_id += 1
         self.view.click_timer.stop()
         self.source_ok = False
@@ -341,20 +360,38 @@ class MainWindow(QMainWindow):
             self.worker.command('seek', c.start_ms)
         self.refresh()
 
+    def queue_preview_frame(self,frame):
+        if frame.source_id!=self.request_id or self.closing:
+            return
+        if self.analysis_active and self.analysis_job.queued:
+            if not self.metadata.get('live') and self.analysis_waiting_seek:
+                if abs(frame.timestamp_ms-self.workflow.calibration.start_ms)>1000/max(1,self.metadata.get('fps',30)):
+                    return
+                self.analysis_waiting_seek=False
+            self.analysis_job.submit(frame)
+        self.pending_preview=frame
+        if self.current_frame is None or not self.playing:
+            self.flush_preview()
+            return
+        if not self.preview_timer.isActive():
+            self.preview_timer.start(16)
+
+    def flush_preview(self):
+        frame=self.pending_preview
+        self.pending_preview=None
+        if frame is not None:
+            self.on_frame(frame)
+
     def on_frame(self, frame):
         if self.analysis_active:
             if self.analysis_job.queued and frame.source_id == self.request_id:
-                if not self.metadata.get('live') and self.analysis_waiting_seek:
-                    if abs(frame.timestamp_ms-self.workflow.calibration.start_ms)>1000/max(1,self.metadata.get('fps',30)):
-                        return
-                    self.analysis_waiting_seek=False
-                self.analysis_job.submit(frame)
-                had_tracks=bool(self.view.analysis_tracks)
-                self.view.analysis_tracks = []
+                self.view.analysis_tracks = self.preview_tracking.frame(
+                    self.display_frame(frame.image),frame.timestamp_ms,frame.index)
                 self.present_frame(frame)
-                if had_tracks:
-                    self.view.redraw()
-                    self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected)
+                self.update_analysis_events(self.analysis_panel.data.get('runs',[]) if self.analysis_panel.data else [],frame.timestamp_ms)
+                self.view.redraw_analysis()
+                if self.right_tabs.currentIndex()==2:
+                    self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
             return
         had_tracks = bool(self.view.analysis_tracks)
         self.view.analysis_tracks = []
@@ -365,6 +402,7 @@ class MainWindow(QMainWindow):
         panel = self.analysis_panel
         if panel.review_analysis_id and frame.source_id == self.request_id:
             self.view.analysis_tracks = AnalysisRepository(self.database).tracks_at(panel.review_analysis_id,frame.index)
+            self.update_analysis_events(panel.data.get('runs',[]) if panel.data else [],frame.timestamp_ms)
             self.view.redraw()
             self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
         if panel.review_end_ms is not None and frame.timestamp_ms >= panel.review_end_ms:
@@ -397,7 +435,7 @@ class MainWindow(QMainWindow):
         if request_id != self.request_id:
             return
         changed = self.source_ok != healthy
-        self.source_ok = healthy
+        self.source_ok = healthy and self.current_frame is not None
         if not healthy:
             if self.analysis_active and self.analysis_job.queued and not self.metadata.get('live'):
                 self.stop_analysis()
@@ -417,6 +455,7 @@ class MainWindow(QMainWindow):
 
     def on_ended(self, request_id):
         if request_id == self.request_id:
+            self.flush_preview()
             if self.analysis_active and self.analysis_job.queued and not self.metadata.get('live') and not self.analysis_waiting_seek:
                 self.analysis_job.end_input()
             self.notice.setText('動画の終端です。シークまたは先頭に戻して再生できます。')
@@ -480,6 +519,7 @@ class MainWindow(QMainWindow):
 
     def refresh(self):
         c = self.workflow.calibration
+        self.update_lane_totals()
         index = min(self.view.lane_index, max(0, len(c.lanes)-1))
         self.lane_select.blockSignals(True)
         self.lane_select.clear()
@@ -516,6 +556,8 @@ class MainWindow(QMainWindow):
                 control.setEnabled(False)
 
     def right_tab_changed(self,index):
+        if index==2:
+            self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
         if self.analysis_active:
             return
         if index == 1:
@@ -772,6 +814,10 @@ class MainWindow(QMainWindow):
         self.view.click_timer.stop()
         self.view.analysis_tracks = []
         self.view.set_mode('analysis')
+        self.view.analysis_events = []
+        self.preview_tracking = PreviewTracking()
+        self.lane_total_values = {}
+        self.update_lane_totals()
         config = self.analysis_panel.config()
         if self.metadata.get('live'):
             config['live_start_after_ms'] = ((time.monotonic()-self.metadata['_live_epoch'])*1000
@@ -810,13 +856,48 @@ class MainWindow(QMainWindow):
         if self.closing or packet['frame'].source_id != self.request_id:
             return
         queued=self.analysis_active and self.analysis_job.queued
+        if queued:
+            self.flush_preview()
         if not queued:
             self.present_frame(packet['frame'])
-        matches=self.current_frame is not None and self.current_frame.index==packet['frame'].index
-        self.view.analysis_tracks = packet['tracks'] if matches else []
-        self.view.redraw()
-        self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
+        overlays=packet.get('overlays',packet['tracks'])
+        self.view.analysis_tracks = (self.preview_tracking.correct(overlays,packet['frame'].timestamp_ms,packet['frame'].index,self.display_frame(packet['frame'].image))
+                                     if queued else overlays)
+        self.update_analysis_events(packet['runs'],self.current_frame.timestamp_ms if self.current_frame else 0)
+        self.view.redraw_analysis()
+        if self.right_tabs.currentIndex()==2:
+            self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
         self.analysis_panel.show_packet(packet)
+
+    def update_lane_totals(self,values=None,lanes=None):
+        if values is not None:
+            self.lane_total_values=values
+        lanes=self.workflow.calibration.lanes if lanes is None else lanes
+        signature=tuple((l.id,l.name,l.color) for l in lanes)
+        if signature!=self.lane_total_signature:
+            while self.lane_totals.count():
+                item=self.lane_totals.takeAt(0)
+                item.widget().deleteLater()
+            self.lane_total_labels={}
+            for lane in lanes:
+                label=QLabel(); label.setAlignment(Qt.AlignCenter)
+                label.setWordWrap(True)
+                label.setStyleSheet(f'font-size:28px;font-weight:700;border:2px solid {lane.color};border-radius:6px;padding:8px;')
+                label.setMinimumHeight(78)
+                self.lane_totals.addWidget(label)
+                self.lane_total_labels[lane.id]=label
+            self.lane_total_signature=signature
+        for lane in lanes:
+            self.lane_total_labels[lane.id].setText(f'{lane.id} {lane.name}\n{self.lane_total_values.get(lane.id,0)}')
+
+    def change_analysis_geometry(self,checked):
+        self.view.show_analysis_geometry=checked
+        self.view.redraw()
+
+    def update_analysis_events(self,runs,timestamp):
+        self.view.analysis_events=[e for run in runs if run.get('review')!='excluded'
+            for e in run.get('events',[]) if e.get('review')!='excluded' and e['timestamp_ms']<=timestamp]
+        self.course_map.analysis_events=self.view.analysis_events
 
     def on_analysis_completed(self,result):
         self.analysis_result = result

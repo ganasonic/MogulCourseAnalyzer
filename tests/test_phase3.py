@@ -458,3 +458,126 @@ def test_real_yolox_blank_cpu_inference():
     detector=AthleteDetector()
     result=detector.detect(np.zeros((144,256,3),np.uint8))
     assert result==[] and len(detector.sha256)==64
+
+
+def transit_sequence(course,points,step_ms=200):
+    engine=AnalyticsEngine(course)
+    for i,(x,y) in enumerate(points):
+        engine.update([track(1,x,y,i*step_ms)],i*step_ms,i)
+    return engine
+
+
+def test_completion_requires_top_crossing_and_bottom_exit(course):
+    engine=transit_sequence(course,[(.35,y) for y in [.02,.08,.2,.35,.5,.65,.8,.94]])
+    assert summarize(engine.snapshot(),course.lanes)['completions']=={'A':0,'B':0}
+    engine.update([track(1,.35,.98,1800)],1800,9)
+    assert summarize(engine.snapshot(),course.lanes)['completions']=={'A':1,'B':0}
+    engine.update([track(1,.35,.99,2000)],2000,10)
+    assert summarize(engine.snapshot(),course.lanes)['completions']['A']==1
+
+
+def test_mid_lane_appearance_never_counts_as_complete(course):
+    engine=transit_sequence(course,[(.65,y) for y in [.3,.4,.55,.7,.85,.98]])
+    summary=summarize(engine.snapshot(),course.lanes)
+    assert summary['passes']['B']==1 and summary['completions']['B']==0
+    assert summary['entry_unobserved']==1
+
+
+def test_red_lane_course_out_marker_and_no_completion(course):
+    engine=transit_sequence(course,[(.65,.02),(.65,.08),(.65,.2),(.72,.3),(.79,.4),(.83,.43),(.85,.5)])
+    run=engine.snapshot()[0]
+    assert run['transit_state']=='course_out' and run['completed_lane'] is None
+    assert len(run['events'])==1 and run['events'][0]['kind']=='course_out'
+    assert run['events'][0]['lane_id']=='B' and abs(run['events'][0]['point'][0]-.8)<1e-5
+    assert summarize(engine.snapshot(),course.lanes)['completions']['B']==0
+
+
+def test_departure_outside_middle_is_not_silently_discarded(course):
+    engine=transit_sequence(course,[(.65,.02),(.65,.08),(.65,.2),(.72,.23),(.79,.25),(.83,.28),(.94,.3),(.97,.35)])
+    assert engine.snapshot()[0]['events'][0]['kind']=='course_out'
+    assert engine.snapshot()[0]['last_ms']==1400
+
+
+def test_long_tracking_gap_never_guesses_finish_or_course_out(course):
+    engine=transit_sequence(course,[(.35,.02),(.35,.08),(.35,.2)])
+    engine.update([track(1,.35,.98,5000)],5000,3)
+    run=engine.snapshot()[0]
+    assert run['transit_state']=='uncertain' and not run['events'] and run['completed_lane'] is None
+
+
+def test_lane_change_disqualifies_original_lane_finish(course):
+    engine=transit_sequence(course,[(.35,.02),(.35,.08),(.35,.2),(.42,.23),(.48,.25),(.52,.3),(.65,.4),(.65,.6),(.65,.8),(.65,.98)])
+    assert summarize(engine.snapshot(),course.lanes)['completions']=={'A':0,'B':0}
+    assert engine.snapshot()[0]['events'][0]['lane_id']=='A'
+
+
+def test_pose_anomaly_is_unconfirmed_candidate_not_stumble_diagnosis(course):
+    engine=transit_sequence(course,[(.35,y) for y in [.02,.08,.2,.3,.4]])
+    for i in range(4):
+        t=1000+i*200
+        wide=Track(1,[.30,.45+i*.02,.40,.50+i*.02],.9,t,hits=10)
+        engine.update([wide],t,5+i)
+    event=engine.snapshot()[0]['events'][0]
+    assert event['kind']=='balance_candidate' and event['review']=='unreviewed'
+
+
+def test_transit_events_restore_and_review_audit(tmp_path,course):
+    engine=transit_sequence(course,[(.65,.02),(.65,.08),(.65,.2),(.72,.3),(.79,.4),(.83,.43)])
+    repo=AnalysisRepository(tmp_path/'event-review.sqlite')
+    identifier=repo.begin(course,None,{},'fixture')
+    repo.write_frame(identifier,[],engine.snapshot(),5,0,800)
+    repo.finish(identifier,'completed')
+    run=repo.load_analysis(identifier)['runs'][0]; event=run['events'][0]
+    with pytest.raises(ValueError):
+        repo.review_event(identifier,run['id'],event['id'],'confirmed','')
+    repo.review_event(identifier,run['id'],event['id'],'confirmed','映像でレーン逸脱を確認')
+    assert repo.load_analysis(identifier)['runs'][0]['events'][0]['review']=='confirmed'
+    with sqlite3.connect(repo.path) as db:
+        assert db.execute('select count(*) from run_reviews').fetchone()[0]==1
+
+
+def test_lane_counter_layout_supports_two_to_four_lanes(qtbot,window):
+    c=window.workflow.calibration
+    for count in [2,3,4]:
+        c.configure_lanes(count)
+        window.update_lane_totals({lane.id:i+1 for i,lane in enumerate(c.lanes)})
+        assert window.lane_totals.count()==count
+        assert window.lane_total_labels[c.lanes[-1].id].text().endswith(str(count))
+
+
+def test_gui_counts_complete_lane_and_marks_red_departure(qtbot,window,tmp_path,monkeypatch):
+    import mogul.app as app
+    class EntryDetector(FixtureDetector):
+        def detect(self,*args,**kwargs):
+            ys=[.02,.08,.16,.25,.34,.43,.52,.61,.70,.79,.88,.98]
+            xs=[.65,.65,.65,.65,.65,.65,.65,.70,.76,.83,.85,.87]
+            i=min(self.calls,11); self.calls+=1
+            return [detection(.35,ys[i]),detection(xs[i],ys[i])]
+    monkeypatch.setattr(app,'AnalysisWorker',lambda *a,**kw:AnalysisWorker(*a,**kw,detector_factory=EntryDetector))
+    model=tmp_path/'fixture.onnx'; model.write_bytes(b'test fixture')
+    panel=window.analysis_panel
+    panel.model.setText(str(model))
+    panel.processing_mode.setCurrentIndex(panel.processing_mode.findData('all_frames'))
+    window.start_analysis()
+    qtbot.waitUntil(lambda:not window.analysis_active,timeout=8000)
+    assert window.analysis_result['status']=='completed'
+    assert window.lane_total_labels['A'].text().endswith('1')
+    assert window.lane_total_labels['B'].text().endswith('0')
+    assert len(window.view.analysis_events)==1 and window.view.analysis_events[0]['lane_id']=='B'
+    assert panel.event_list.count()==1
+    panel.event_list.setCurrentRow(0); panel.reason.setText('検証動画の逸脱を確認')
+    panel.edit_event('confirmed')
+    assert window.view.analysis_events[0]['review']=='confirmed'
+    run=next(r for r in panel.data['runs'] if r.get('completed_lane')=='A')
+    repo=AnalysisRepository(window.database)
+    with pytest.raises(ValueError):
+        repo.review(panel.data['id'],run['id'],{'completed_lane':'INVALID'},'不正なレーンを拒否')
+    repo.review(panel.data['id'],run['id'],{'completed_lane':None},'映像を確認して完走を取り消し')
+    panel.load(panel.data['id'])
+    assert window.lane_total_labels['A'].text().endswith('0')
+
+
+def test_shared_boundary_small_jitter_does_not_create_departure(course):
+    engine=transit_sequence(course,[(.49,.02),(.49,.08),(.49,.2),(.4995,.3),(.5005,.4),(.4995,.5),(.49,.65),(.49,.8),(.49,.94),(.49,.98)])
+    run=engine.snapshot()[0]
+    assert not run['events'] and run['completed_lane']=='A'

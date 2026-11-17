@@ -90,7 +90,7 @@ class AnalysisRepository(EventRepository):
         data=self.load_analysis(identifier)
         if data['status']=='running':
             raise ValueError('解析停止後に修正してください')
-        allowed={'qualified','start_lane','passed_lanes','review','merged_into','change_count_override'}
+        allowed={'qualified','start_lane','passed_lanes','review','merged_into','change_count_override','completed_lane'}
         if set(changes)-allowed:
             raise ValueError('修正できない項目です')
         runs=deepcopy(data['runs'])
@@ -101,7 +101,7 @@ class AnalysisRepository(EventRepository):
         run.update(changes)
         c=Calibration.from_dict(data['calibration'])
         lanes={l.id for l in c.lanes}
-        if type(run['qualified']) is not bool or run.get('review') not in ('unreviewed','confirmed','excluded') or run.get('start_lane') not in lanes|{None} or not set(run.get('passed_lanes',[]))<=lanes:
+        if type(run['qualified']) is not bool or run.get('review') not in ('unreviewed','confirmed','excluded') or run.get('start_lane') not in lanes|{None} or run.get('completed_lane') not in lanes|{None} or not set(run.get('passed_lanes',[]))<=lanes:
             raise ValueError('人数・レーン・確認状態が不正です')
         override=run.get('change_count_override')
         if override is not None and (type(override) is not int or not 0<=override<=9999):
@@ -109,6 +109,23 @@ class AnalysisRepository(EventRepository):
         if run.get('merged_into')==run_id:
             raise ValueError('同じ滑走IDへ統合できません')
         summarize(runs,c.lanes)  # validates merge references and cycles before writing
+        with closing(self._connect()) as db,db:
+            db.execute('UPDATE runs SET data_json=? WHERE analysis_id=? AND id=?',(json.dumps(run,ensure_ascii=False),identifier,run_id))
+            db.execute('INSERT INTO run_reviews(analysis_id,run_id,created_at,reason,before_json,after_json) VALUES(?,?,?,?,?,?)',
+                       (identifier,run_id,now(),reason.strip(),json.dumps(before,ensure_ascii=False),json.dumps(run,ensure_ascii=False)))
+
+    def review_event(self,identifier,run_id,event_id,state,reason):
+        data=self.load_analysis(identifier)
+        if data['status']=='running' or not reason.strip() or state not in ('confirmed','excluded','unreviewed'):
+            raise ValueError('停止後に確認状態と理由を指定してください')
+        run=next((r for r in data['runs'] if r['id']==run_id),None)
+        if run is None:
+            raise ValueError('滑走記録がありません')
+        before=deepcopy(run)
+        event=next((e for e in run.get('events',[]) if e['id']==event_id),None)
+        if event is None:
+            raise ValueError('イベントがありません')
+        event['review']=state
         with closing(self._connect()) as db,db:
             db.execute('UPDATE runs SET data_json=? WHERE analysis_id=? AND id=?',(json.dumps(run,ensure_ascii=False),identifier,run_id))
             db.execute('INSERT INTO run_reviews(analysis_id,run_id,created_at,reason,before_json,after_json) VALUES(?,?,?,?,?,?)',

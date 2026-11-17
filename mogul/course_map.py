@@ -14,6 +14,7 @@ class CourseMap(QGraphicsView):
         self.setBackgroundBrush(QColor('#18212d'))
         self.setRenderHint(QPainter.Antialiasing)
         self.setMinimumWidth(300)
+        self.analysis_events=[]
 
     def update_course(self,c,selected=None,tracks=None):
         self.scene().clear()
@@ -65,6 +66,13 @@ class CourseMap(QGraphicsView):
             text=self.scene().addText(f"T{track['track_id']} / {track.get('lane_id') or '?'}")
             text.setDefaultTextColor(QColor('#8bff72'))
             text.setPos(p+QPointF(8,-12)); text.setZValue(10)
+        for event in self.analysis_events:
+            p=position(event['point'])
+            color=QColor('#ff5252' if event['kind']=='course_out' else '#ffa726')
+            pen=QPen(color,3,Qt.SolidLine if event.get('review')=='confirmed' else Qt.DashLine)
+            item=self.scene().addEllipse(-8,-8,16,16,pen); item.setPos(p); item.setZValue(12)
+            text=self.scene().addText(('逸脱' if event['kind']=='course_out' else '姿勢候補')+f" {event['timestamp_ms']/1000:.1f}s")
+            text.setDefaultTextColor(color); text.setPos(p+QPointF(10,-10)); text.setZValue(12)
         self.scene().setSceneRect(self.scene().itemsBoundingRect().adjusted(-15,-15,15,15))
         self.fitInView(self.sceneRect(),Qt.KeepAspectRatio)
 

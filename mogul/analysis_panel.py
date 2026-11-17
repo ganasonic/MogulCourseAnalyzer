@@ -37,11 +37,12 @@ class AnalysisPanel(QScrollArea):
         self.model_hint.setWordWrap(True)
         layout.addWidget(self.model_hint)
         form=QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.processing_mode=QComboBox()
         self.processing_mode.addItem('再生優先（1倍速・解析は間引き）','realtime')
         self.processing_mode.addItem('全フレーム解析（処理速度で再生）','all_frames')
         form.addRow('分析方式',self.processing_mode)
-        mode_hint=QLabel('再生優先では未解析フレームが生じ、短い滑走やレーン変更を見逃す場合があります。\n人物枠は解析した同じフレームにだけ表示します。')
+        mode_hint=QLabel('再生優先では未解析フレームが生じ、短い滑走やレーン変更を見逃す場合があります。\n緑の破線枠は短時間の画像追従補間／未確定候補です。補間位置は人数・異常判定には使いません。')
         mode_hint.setWordWrap(True)
         layout.addWidget(mode_hint)
         self.confidence=QDoubleSpinBox()
@@ -66,6 +67,16 @@ class AnalysisPanel(QScrollArea):
         self.summary=QLabel('集計なし')
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
+        self.event_list=QListWidget()
+        self.event_list.setMinimumHeight(95)
+        layout.addWidget(QLabel('異常候補（赤：レーン逸脱／橙：姿勢異常、要確認）'))
+        layout.addWidget(self.event_list)
+        self.confirm_event=QPushButton('イベント確認済み（理由必須）')
+        self.confirm_event.clicked.connect(lambda:self.edit_event('confirmed'))
+        layout.addWidget(self.confirm_event)
+        self.exclude_event=QPushButton('イベントを除外（理由必須）')
+        self.exclude_event.clicked.connect(lambda:self.edit_event('excluded'))
+        layout.addWidget(self.exclude_event)
         layout.addWidget(QLabel('自動推定は未確認を含みます。\n停止後に人数・レーン・追跡の統合を修正できます。'))
         self.history=QComboBox()
         layout.addWidget(self.history)
@@ -83,10 +94,13 @@ class AnalysisPanel(QScrollArea):
         self.details.setWordWrap(True)
         layout.addWidget(self.details)
         form=QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.counted=QCheckBox('滑走として集計する')
         form.addRow(self.counted)
         self.start_lane=QComboBox()
         form.addRow('滑走開始レーン',self.start_lane)
+        self.completion_lane=QComboBox()
+        form.addRow('完走レーン（映像確認後）',self.completion_lane)
         self.review_state=QComboBox()
         for label,value in [('未確認の自動推定','unreviewed'),('確認済み','confirmed'),('除外','excluded')]:
             self.review_state.addItem(label,value)
@@ -154,7 +168,7 @@ class AnalysisPanel(QScrollArea):
 
     def set_active(self,active):
         self.stop.setEnabled(active)
-        for widget in [self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
+        for widget in [self.confirm_event,self.exclude_event,self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
                        self.save_review,self.merge,self.unmerge,self.add,self.video,self.interrupted]:
             widget.setEnabled(not active)
 
@@ -163,20 +177,46 @@ class AnalysisPanel(QScrollArea):
             self.data={'id':packet['analysis_id'],'calibration':self.window.workflow.calibration.to_dict(),'status':'running'}
         self.data['runs']=packet['runs']
         self.show_summary(packet['summary'])
-        self.progress.setText(f"解析 {packet['processed']}フレーム / 未解析 {packet['dropped']}枚\n処理 {packet['inference_ms']:.0f}ms/枚 / 最終解析時刻 {packet['frame'].timestamp_ms/1000:.2f}秒\n再生時刻は映像下の時計を参照してください。")
+        self.progress.setText(f"解析 {packet['processed']}フレーム / 未解析 {packet['dropped']}枚\n処理 {packet['inference_ms']:.0f}ms/枚 / 最終解析時刻 {packet['frame'].timestamp_ms/1000:.2f}秒\n人物候補 {packet.get('detection_count',0)} / 確定追跡 {len(packet['tracks'])}\n再生時刻は映像下の時計を参照してください。")
+        self.fill_events()
         self.fill_runs()
 
     def show_summary(self,summary):
+        self.window.update_lane_totals(summary.get('completions',{}))
         lines=[f"ユニーク滑走 {summary['unique_runs']} / 集計内未確認 {summary['unreviewed']}",
+               f"入口未確認 {summary.get('entry_unobserved',0)} / 追跡不明 {summary.get('uncertain_transits',0)}（完走へ加算しません）",
                '開始人数: '+' / '.join(f'{key} {value}' for key,value in summary['starts'].items()),
-               '通過人数: '+' / '.join(f'{key} {value}' for key,value in summary['passes'].items()),
+               '区間移動人数（完走とは別）: '+' / '.join(f'{key} {value}' for key,value in summary['passes'].items()),
                f"ブルー {summary['groups']['blue']} / レッド {summary['groups']['red']} / 中立 {summary['groups']['neutral']}",
                f"コースチェンジ {summary['course_changes']}件"]
         self.summary.setText('\n'.join(lines))
 
+    def fill_events(self):
+        selected=self.event_list.currentItem().data(Qt.UserRole) if self.event_list.currentItem() else None
+        self.event_list.clear()
+        for run in (self.data or {}).get('runs',[]):
+            if run.get('review')=='excluded':
+                continue
+            for event in run.get('events',[]):
+                label='レーン逸脱' if event['kind']=='course_out' else '姿勢異常候補'
+                self.event_list.addItem(f"{event['timestamp_ms']/1000:.2f}s / {event['lane_id']} / {label} / "+{'unreviewed':'未確認','confirmed':'確認済','excluded':'除外'}.get(event.get('review'),'未確認'))
+                item=self.event_list.item(self.event_list.count()-1)
+                item.setData(Qt.UserRole,(run['id'],event['id']))
+                if item.data(Qt.UserRole)==selected:
+                    self.event_list.setCurrentItem(item)
+
+    def edit_event(self,state):
+        item=self.event_list.currentItem()
+        if item:
+            run,event=item.data(Qt.UserRole)
+            self.edit(lambda repo:repo.review_event(self.data['id'],run,event,state,self.reason.text()))
+
     def fill_runs(self):
         self.runs.blockSignals(True)
         self.runs.clear()
+        self.event_list.clear()
+        self.window.update_lane_totals({})
+        self.window.update_analysis_events([],0)
         for run in self.data.get('runs',[]):
             state='除外' if run.get('review')=='excluded' else ('集計' if run['qualified'] else '未集計')
             label=f"{run['id'][:8]} / T{','.join(map(str,run['track_ids'])) or '手動'} / {state}"
@@ -220,12 +260,22 @@ class AnalysisPanel(QScrollArea):
             c=Calibration.from_dict(self.data['calibration'])
             self.show_summary(summarize(self.data['runs'],c.lanes))
             self.fill_runs()
+            self.fill_events()
+            self.window.update_lane_totals(summarize(self.data['runs'],c.lanes).get('completions',{}),c.lanes)
+            current=self.window.workflow.calibration
+            matches=(c.middle==current.middle and c.boundaries==current.boundaries and
+                     c.rotation==current.rotation and c.mirrored==current.mirrored and
+                     c.source.get('path')==current.source.get('path') and c.source.get('kind')==current.source.get('kind'))
+            self.window.update_analysis_events(self.data['runs'] if matches else [],self.window.current_frame.timestamp_ms if self.window.current_frame else 0)
+            self.window.view.redraw()
+            self.window.course_map.update_course(self.window.workflow.calibration,self.window.landmarks_panel.selected,self.window.view.analysis_tracks)
             mode='再生優先' if self.data.get('config',{}).get('processing_mode')=='realtime' else '全フレーム／ライブ'
             self.progress.setText(f"{mode} / {STATUS_LABELS.get(self.data['status'],self.data['status'])} / 解析 {self.data['frames_processed']}枚 / 未解析 {self.data['dropped_frames']}枚"+('\n'+self.data['error'] if self.data.get('error') else ''))
             self.loading=True
             previous=self.manual_lane.currentData()
             self.manual_lane.clear()
             self.start_lane.clear(); self.start_lane.addItem('開始不明／途中から検出',None)
+            self.completion_lane.clear(); self.completion_lane.addItem('未確認／未完走',None)
             while self.passed_layout.count():
                 item=self.passed_layout.takeAt(0)
                 if item.widget():
@@ -234,6 +284,7 @@ class AnalysisPanel(QScrollArea):
             for lane in c.lanes:
                 self.manual_lane.addItem(lane.id,lane.id)
                 self.start_lane.addItem(lane.id,lane.id)
+                self.completion_lane.addItem(lane.id,lane.id)
                 check=QCheckBox(lane.id)
                 self.passed_checks[lane.id]=check
                 self.passed_layout.addWidget(check)
@@ -256,6 +307,7 @@ class AnalysisPanel(QScrollArea):
         run=next(r for r in self.data['runs'] if r['id']==self.selected)
         self.counted.setChecked(run['qualified'])
         self.start_lane.setCurrentIndex(max(0,self.start_lane.findData(run.get('start_lane'))))
+        self.completion_lane.setCurrentIndex(max(0,self.completion_lane.findData(run.get('completed_lane'))))
         self.review_state.setCurrentIndex(self.review_state.findData(run.get('review','unreviewed')))
         for lane,check in self.passed_checks.items():
             check.setChecked(lane in run.get('passed_lanes',[]))
@@ -280,6 +332,7 @@ class AnalysisPanel(QScrollArea):
     def apply_review(self):
         if self.selected:
             changes={'qualified':self.counted.isChecked(),'start_lane':self.start_lane.currentData(),
+                     'completed_lane':self.completion_lane.currentData(),
                      'passed_lanes':[lane for lane,check in self.passed_checks.items() if check.isChecked()],
                      'review':self.review_state.currentData(),'change_count_override':self.changes.value()}
             self.edit(lambda repo:repo.review(self.data['id'],self.selected,changes,self.reason.text()))

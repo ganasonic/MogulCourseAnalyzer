@@ -52,6 +52,9 @@ class CalibrationView(QGraphicsView):
         self.landmark_markers = []
         self.pending_bump_polygon = None
         self.analysis_tracks = []
+        self.analysis_events = []
+        self.analysis_items = []
+        self.show_analysis_geometry = False
         self.drag = None
         self.press = None
         self.zoom_factor = 1.0
@@ -205,10 +208,15 @@ class CalibrationView(QGraphicsView):
         self.overlays.clear()
         self.handles.clear()
         c = self.calibration
+        analyzing=self.mode=='analysis'
+        labels=not analyzing or self.show_analysis_geometry
+        opacity=min(c.opacity,.08) if analyzing else c.opacity
         if c.middle:
-            self._polygon(c.middle, c.middle_color, c.opacity, c.middle_confirmed)
+            self._polygon(c.middle, c.middle_color, opacity, c.middle_confirmed)
         for i, lane in enumerate(c.lanes):
-            self._polygon(c.lane_polygon(i), lane.color, c.opacity, lane.confirmed)
+            self._polygon(c.lane_polygon(i), lane.color, opacity, lane.confirmed)
+            if not labels:
+                continue
             center = np.mean(c.lane_polygon(i), axis=0)
             text = self.scene().addText(f'{lane.id}: {lane.name} ' + ('✓' if lane.confirmed else '編集中'))
             text.setDefaultTextColor(QColor('white'))
@@ -225,17 +233,49 @@ class CalibrationView(QGraphicsView):
                 item.setZValue(10)
                 self.overlays.append(item)
                 self.handles.append((i, item))
-        self._draw_landmarks()
+        if labels:
+            self._draw_landmarks()
+        self._draw_analysis()
+
+    def redraw_analysis(self):
+        old=set(self.analysis_items)
+        for item in self.analysis_items:
+            self.scene().removeItem(item)
+        self.overlays=[item for item in self.overlays if item not in old]
+        self._draw_analysis()
+
+    def _draw_analysis(self):
+        start=len(self.overlays)
         self._draw_tracks()
+        for event in self.analysis_events:
+            color='#ff5252' if event['kind']=='course_out' else '#ffa726'
+            label='レーン逸脱' if event['kind']=='course_out' else '姿勢異常候補'
+            pen=QPen(QColor(color),3,Qt.SolidLine if event.get('review')=='confirmed' else Qt.DashLine)
+            pen.setCosmetic(True)
+            point=event['point']
+            item=self.scene().addEllipse(-9,-9,18,18,pen)
+            item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+            item.setPos(point[0]*self.width_px,point[1]*self.height_px); item.setZValue(20)
+            text=self.scene().addText(f"{label} {'✓' if event.get('review')=='confirmed' else '?'} {event['timestamp_ms']/1000:.1f}s"+(f" / 位置対応 {event['bump_label']}（原因未確認）" if event.get('bump_label') else ' / 原因コブ未特定'))
+            text.setDefaultTextColor(QColor(color)); text.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+            text.setPos(point[0]*self.width_px+12,point[1]*self.height_px-10); text.setZValue(20)
+            self.overlays.extend([item,text])
+        self.analysis_items=self.overlays[start:]
 
     def _draw_tracks(self):
         for track in self.analysis_tracks:
             x1,y1,x2,y2=track['bbox']
-            pen=QPen(QColor('#8bff72'),2)
+            pen=QPen(QColor('#8bff72'),2,Qt.DashLine if track.get('interpolated') or track.get('tentative') else Qt.SolidLine)
             pen.setCosmetic(True)
             item=self.scene().addRect(x1*self.width_px,y1*self.height_px,(x2-x1)*self.width_px,(y2-y1)*self.height_px,pen)
+            scale=max(.001,abs(self.transform().m11()))
+            pad_x=max(0,(8/scale-(x2-x1)*self.width_px)/2)
+            pad_y=max(0,(12/scale-(y2-y1)*self.height_px)/2)
+            item.setRect(x1*self.width_px-pad_x,y1*self.height_px-pad_y,
+                         (x2-x1)*self.width_px+2*pad_x,(y2-y1)*self.height_px+2*pad_y)
             item.setZValue(15)
-            text=self.scene().addText(f"T{track['track_id']} / {track['run_id'][:6]} / {track.get('lane_id') or '?'} / {track['confidence']:.2f}")
+            suffix=' / 追従補間' if track.get('interpolated') else ''
+            text=self.scene().addText(f"T{track['track_id']} / {track['run_id'][:6]} / {track.get('lane_id') or '?'} / {track['confidence']:.2f}"+suffix)
             text.setDefaultTextColor(QColor('#8bff72'))
             text.setFlag(QGraphicsItem.ItemIgnoresTransformations)
             text.setPos(x1*self.width_px,y1*self.height_px-22)

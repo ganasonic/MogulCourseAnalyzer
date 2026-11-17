@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 from .geometry import contains,intersects
 from .landmarks import course_position
+from .transit import LaneTransit
 
 
 @dataclass
@@ -34,6 +35,14 @@ class Run:
     pending_lane: str | None=None
     pending_since: float=0
     pending_hits: int=0
+    entry_lane: str | None=None
+    completed_lane: str | None=None
+    transit_state: str='entry_unobserved'
+    events: list=field(default_factory=list)
+    balance_since: float | None=None
+    upright_samples: int=0
+    transit_anchor: list=field(default_factory=list)
+    transit_anchor_ms: float=0
 
 
 class AnalyticsEngine:
@@ -42,6 +51,7 @@ class AnalyticsEngine:
         self.runs={}
         self.track_runs={}
         self.relink_ms=relink_ms
+        self.transit=LaneTransit(calibration)
 
     def lane_for(self,point,current=None):
         # Keep the current lane near a shared edge; suppress single-frame jitter.
@@ -81,12 +91,15 @@ class AnalyticsEngine:
         claimed=set()
         for track in tracks:
             point=track.foot
-            if not contains(self.c.middle,point):
-                continue
+            if track.id not in self.track_runs and not contains(self.c.middle,point):
+                x,y=course_position(self.c,point)
+                if not (-.1<=x<=1.1 and -.15<=y<=1.15):
+                    continue
             run=self._run(track,timestamp,visible_ids,claimed)
             claimed.add(run.id)
             previous=run.point[:]
             previous_ms=run.last_ms
+            self.transit.update(run,track,previous,previous_ms,timestamp)
             depth=course_position(self.c,point)[1]
             lane=self.lane_for(point,run.lane)
             if run.first_lane is None and lane is not None:
@@ -130,7 +143,8 @@ class AnalyticsEngine:
             run.velocity=list(track.velocity)
             run.confidence=track.confidence
             records.append({'track_id':track.id,'run_id':run.id,'timestamp_ms':timestamp,'frame_index':frame_index,
-                            'bbox':track.bbox[:],'point':list(point),'lane_id':run.lane if lane==run.lane else None,'confidence':track.confidence})
+                            'bbox':track.bbox[:],'point':list(point),'lane_id':run.lane if lane==run.lane else None,
+                            'tentative':track.hits<3,'confidence':track.confidence})
         return records
 
     def snapshot(self):
@@ -151,6 +165,9 @@ def summarize(runs,lanes):
             current=by_id[current['merged_into']]
         groups.setdefault(current['id'],[]).append(run)
     result={'unique_runs':0,'course_changes':0,'starts':{l.id:0 for l in lanes},'passes':{l.id:0 for l in lanes},'groups':{'blue':0,'red':0,'neutral':0},'unreviewed':0}
+    result['completions']={l.id:0 for l in lanes}
+    result['entry_unobserved']=sum(r.get('transit_state','entry_unobserved')=='entry_unobserved' for r in runs if r.get('review')!='excluded')
+    result['uncertain_transits']=sum(r.get('transit_state')=='uncertain' for r in runs if r.get('review')!='excluded')
     lane_groups={lane.id:lane.group for lane in lanes}
     for root,parts in groups.items():
         master=by_id[root]
@@ -160,6 +177,9 @@ def summarize(runs,lanes):
         if not any(p.get('qualified') for p in active):
             continue
         result['unique_runs']+=1
+        for lane in {p.get('completed_lane') for p in active}:
+            if lane in result['completions']:
+                result['completions'][lane]+=1
         if any(p.get('review')!='confirmed' for p in active):
             result['unreviewed']+=1
         active.sort(key=lambda r:r['first_ms'])
