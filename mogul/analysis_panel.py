@@ -404,6 +404,11 @@ class AnalysisPanel(QScrollArea):
         self.window.update_analysis_events([],0)
         self.details.clear()
         self.reason.clear()
+        self.counted.setChecked(False)
+        self.changes.setValue(0);self.manual_time.setValue(0)
+        self.start_lane.setCurrentIndex(0);self.completion_lane.setCurrentIndex(0)
+        self.review_state.setCurrentIndex(0);self.target.clear()
+        for check in self.passed_checks.values():check.setChecked(False)
         self.summary.setText('集計なし')
         self.progress.setText('未実行。位置設定と検出方式を確認して「分析開始」を押してください。')
 

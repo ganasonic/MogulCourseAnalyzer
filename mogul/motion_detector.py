@@ -1,12 +1,13 @@
 """Class-independent motion proposals in calibrated lanes; no learned model."""
 import hashlib
+from collections import deque
 import cv2
 import numpy as np
 from .athlete_detector import Detection
 
 
 class MotionDetector:
-    sha256=hashlib.sha256(b'lane-motion-background-v1').hexdigest()
+    sha256=hashlib.sha256(b'lane-motion-background-v2-coherent-flow').hexdigest()
 
     def __init__(self,min_area=3,delta=12):
         self.min_area=min_area
@@ -16,6 +17,8 @@ class MotionDetector:
         self.previous_small=None
         self.status='背景初期化中'
         self.previous_boxes=[]
+        self.motion_tracks=[]
+        self.motion_frames=deque(maxlen=4)
 
     def camera_transform(self,image,region):
         h,w=image.shape[:2]; scale=min(1,640/w)
@@ -53,6 +56,8 @@ class MotionDetector:
         if self.background is None or self.background.shape!=gray.shape or reset:
             self.background=gray.astype(np.float32); self.previous=gray
             self.previous_boxes=[]
+            self.motion_tracks=[]
+            self.motion_frames=deque([gray.copy()],maxlen=4)
             self.status='カメラ移動により背景を再初期化' if reset else '背景初期化（最初の1枚は集計しません）'
             return []
         local=matrix.copy()
@@ -73,7 +78,15 @@ class MotionDetector:
         difference=np.abs(gray.astype(np.float32)-background)
         noise=float(np.percentile(difference[allowed],90))
         changed=(difference>=max(self.delta,noise*1.5))&allowed
-        current_change=np.abs(gray.astype(np.float32)-previous.astype(np.float32))>=max(4,self.delta*.5)
+        references=[cv2.warpAffine(frame,local,(w,h),flags=cv2.INTER_LINEAR,borderMode=cv2.BORDER_REFLECT) for frame in self.motion_frames]
+        reference=references[0] if references else previous
+        span=max(1,len(references))
+        flow=cv2.calcOpticalFlowFarneback(reference,gray,None,.5,3,11,3,5,1.2,0)
+        self.motion_frames=deque(references+[gray.copy()],maxlen=4)
+        background_pixels=allowed&~changed
+        if background_pixels.sum()>20:
+            flow-=np.median(flow[background_pixels],axis=0)
+        current_change=np.abs(gray.astype(np.float32)-reference.astype(np.float32))>=max(4,self.delta*.5)
         count,labels,stats,centers=cv2.connectedComponentsWithStats(changed.astype(np.uint8),8)
         boxes=[]
         maximum=max(30,int(allowed.sum()*.12))
@@ -82,7 +95,7 @@ class MotionDetector:
             if area<self.min_area or area>maximum:
                 continue
             support=(labels[y:y+bh,x:x+bw]==label)
-            overlaps=any(min(x+bw,b[2])>max(x,b[0]) and min(y+bh,b[3])>max(y,b[1]) for b in self.previous_boxes)
+            overlaps=any(p['verified'] and min(x+bw,p['box'][2])>max(x,p['box'][0]) and min(y+bh,p['box'][3])>max(y,p['box'][1]) for p in self.motion_tracks)
             if not np.any(current_change[y:y+bh,x:x+bw]&support) and not overlaps:
                 continue  # stationary shadows / old background ghosts are not new motion
             boxes.append([int(x),int(y),int(x+bw),int(y+bh)])
@@ -109,6 +122,43 @@ class MotionDetector:
         learning=np.where(changed,.003,.04).astype(np.float32)
         self.background=background*(1-learning)+gray*learning
         self.previous=gray
-        self.previous_boxes=[box for _,box in merged]
-        self.status='移動対象を検出中（人間の見た目は判定しません）'
-        return [Detection([(x0+b[0])/iw,(y0+b[1])/ih,(x0+b[2])/iw,(y0+b[3])/ih],1.) for _,b in merged]
+        confirmed=[];proposals=[];claimed=set()
+        for lane,b in merged:
+            x,y,right,bottom=b
+            support=changed[y:bottom,x:right]
+            vectors=flow[y:bottom,x:right][support]
+            vector=np.median(vectors,axis=0) if len(vectors) else np.zeros(2)
+            magnitude=float(np.linalg.norm(vector))
+            coherent=bool(magnitude>=.25 and np.mean(np.linalg.norm(vectors-vector,axis=1)<max(.3,magnitude*.8))>=.6) if len(vectors) else False
+            vector=vector/span
+            center=np.array([(x+right)/2,(y+bottom)/2])
+            matches=[]
+            for j,p in enumerate(self.motion_tracks):
+                if j in claimed:continue
+                old=p['box'];old_center=local@np.array([(old[0]+old[2])/2,(old[1]+old[3])/2,1.])
+                distance=np.linalg.norm(center-old_center)
+                if distance<=max(5,np.linalg.norm([right-x,bottom-y])*.8):matches.append((distance,j,p))
+            if matches:
+                distance,j,p=min(matches,key=lambda v:v[0])
+                hits=p['hits']+int(coherent);travel=p['travel']+vector if coherent else p['travel']
+                verified=p['verified']
+                origin=local@np.array([p['origin'][0],p['origin'][1],1.])
+                if not coherent and verified:
+                    old=p['box']
+                    intersection=max(0,min(right,old[2])-max(x,old[0]))*max(0,min(bottom,old[3])-max(y,old[1]))
+                    union=(right-x)*(bottom-y)+(old[2]-old[0])*(old[3]-old[1])-intersection
+                    if intersection/max(1,union)<.5 or distance>1.5:continue
+            else:
+                hits=int(coherent);travel=vector.copy() if coherent else np.zeros(2);verified=False
+                origin=center.copy()
+            if not coherent and not verified:
+                continue
+            required=max(2.,(bottom-y)*.4,(right-x)*.4)
+            verified=verified or (hits>=3 and np.linalg.norm(travel)>=required and np.linalg.norm(center-origin)>=required)
+            if matches:claimed.add(j)
+            proposals.append({'box':b,'lane':lane,'hits':hits,'travel':travel,'origin':origin,'verified':verified})
+            if verified:confirmed.append(b)
+        self.motion_tracks=proposals
+        self.previous_boxes=[p['box'] for p in proposals if p['verified']]
+        self.status=f'移動確認 {len(confirmed)} / 確認待ち {len(proposals)-len(confirmed)}（明暗差だけでは追跡しません）'
+        return [Detection([(x0+b[0])/iw,(y0+b[1])/ih,(x0+b[2])/iw,(y0+b[3])/ih],1.) for b in confirmed]

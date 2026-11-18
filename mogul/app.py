@@ -248,6 +248,10 @@ class MainWindow(QMainWindow):
         self.prerequisites = QLabel('')
         self.prerequisites.setWordWrap(True)
         footer.addWidget(self.prerequisites, 1)
+        self.reset_analysis_button=QPushButton('分析結果をリセット')
+        self.reset_analysis_button.setToolTip('停止後に画面の検出結果を消します。領域設定と保存済み履歴は保持します。')
+        self.reset_analysis_button.clicked.connect(self.reset_analysis_results)
+        footer.addWidget(self.reset_analysis_button)
         self.analyze_button = QPushButton('分析開始')
         self.analyze_button.setToolTip('ミドルパートとレーンを確定すると人数分析できます。ゲート・コブ登録は不要です。')
         self.analyze_button.clicked.connect(self.start_analysis)
@@ -504,6 +508,7 @@ class MainWindow(QMainWindow):
         self.refresh_state()
 
     def refresh_state(self):
+        self.reset_analysis_button.setEnabled(not self.analysis_active)
         c = self.workflow.calibration
         self.middle_state.setText('確定済み ✓' if c.middle_confirmed else ('四隅を編集中' if c.middle else '未設定：映像上をドラッグ'))
         self.lanes_state.setText(' / '.join(f'{x.id} {"確定 ✓" if x.confirmed else "未確定"}' for x in c.lanes) or 'ミドルパートを確定してから設定')
@@ -935,6 +940,24 @@ class MainWindow(QMainWindow):
                 AnalysisRepository(self.database).attach_recordings(result['id'],self.workflow.calibration.source.get('recordings',[]))
             except Exception as exc:
                 self.notice.setText('録画関連付けエラー: '+str(exc))
+
+    def reset_analysis_results(self):
+        if self.analysis_active:
+            self.notice.setText('分析を停止してから結果をリセットしてください。')
+            return False
+        if not self.metadata.get('live'):
+            self.worker.command('play',False)
+        self.pending_preview=None;self.preview_timer.stop()
+        self.analysis_result=None
+        self.preview_tracking=PreviewTracking()
+        self.view.analysis_tracks=[]
+        self.analysis_panel.reset_result()
+        self.analysis_panel.history.setCurrentIndex(-1)
+        self.view.redraw()
+        self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected)
+        self.notice.setText('分析結果をリセットしました。領域設定と保存済みの解析履歴は保持しています。')
+        self.refresh_state()
+        return True
 
     def finish_analysis(self):
         job = self.analysis_job
