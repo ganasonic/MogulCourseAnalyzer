@@ -13,6 +13,7 @@ from .orientation import oriented_frame
 from .video import FileVideoSource
 from .athlete_tracker import iou
 from .course_region import CourseRegion
+from .motion_detector import MotionDetector
 
 
 class AnalysisWorker(QThread):
@@ -62,20 +63,25 @@ class AnalysisWorker(QThread):
         start=time.perf_counter()
         repository=AnalysisRepository(self.database)
         try:
-            self.phase.emit('人物モデルを検証・読み込み中…')
-            detector=self.detector_factory(self.config['model_path'],threshold=.1)
+            motion=self.config.get('detection_backend')=='motion'
+            self.calibration.analysis_config.update(self.config)
+            self.phase.emit('コース内の移動対象を検出する準備中…' if motion else '人物モデルを検証・読み込み中…')
+            detector=(MotionDetector(self.config.get('motion_min_area',3),self.config.get('motion_delta',12)) if motion
+                      else self.detector_factory(self.config['model_path'],threshold=.1))
             # Preserve entrance evidence from the first detection. Counting still
             # requires >=3 observations in AnalyticsEngine; early boxes are tentative.
             tracker=AthleteTracker(high=self.config.get('confidence',.35),min_hits=1)
             engine=AnalyticsEngine(self.calibration)
             region=CourseRegion(self.calibration)
+            if motion:
+                tracker.project=region.project
             course_position(self.calibration,self.calibration.middle[0])
             identifier=repository.begin(self.calibration,self.session_id,self.config,detector.sha256)
             live=self.calibration.source.get('kind')=='uvc'
             if not self.queued:
                 source=self.source_factory(self.calibration.source['path'])
                 source.seek(self.calibration.start_ms)
-            self.phase.emit('人物検出・追跡を実行中（集計は未確認の自動推定を含みます）')
+            self.phase.emit('移動対象の検出・追跡を実行中' if motion else '人物検出・追跡を実行中（集計は未確認の自動推定を含みます）')
             while not self.isInterruptionRequested():
                 if self.queued:
                     try:
@@ -106,15 +112,17 @@ class AnalysisWorker(QThread):
                 else:
                     detections=detector.detect(image,self.calibration.middle,tiled=self.config.get('tiles',True))
                 detections=[d for d in detections if region.can_observe(d.foot)]
-                visible=tracker.update(detections,frame.timestamp_ms,can_start=region.can_start)
+                visible=tracker.update(detections,frame.timestamp_ms,can_start=region.can_enter if motion else region.can_start)
                 records=engine.update(visible,frame.timestamp_ms,frame.index)
-                overlays=[r for r in records if region.contains(r['point'])]
+                overlays=[r for r in records if region.contains(r['point']) and (not motion or not r['tentative'])]
                 # Once an already tracked skier has crossed out, retain the event
                 # evidence, then stop spending inference/tracker work on that ID.
                 retired={t.id for t in visible if t.id in engine.track_runs and not region.contains(t.foot) and
                     engine.runs[engine.track_runs[t.id]].transit_state in ('completed','course_out','uncertain')}
                 tracker.tracks=[t for t in tracker.tracks if t.id not in retired]
                 for detection in detections:
+                    if motion:
+                        continue  # raw mid-lane foreground specks are not athlete tracks
                     if not region.contains(detection.foot):
                         continue
                     if detection.confidence<self.config.get('confidence',.35):
@@ -122,14 +130,16 @@ class AnalysisWorker(QThread):
                     if any(iou(detection.bbox,r['bbox'])>.3 for r in records):
                         continue
                     overlays.append({'bbox':detection.bbox,'confidence':detection.confidence,'track_id':'候補',
-                                     'run_id':'未確定','lane_id':None,'point':detection.foot,'tentative':True})
+                                     'run_id':'未確定','lane_id':None,'point':detection.foot,'tentative':True,
+                                     'detection_kind':'motion' if motion else 'person'})
                 processed+=1
                 last_timestamp=frame.timestamp_ms
                 runs=engine.snapshot()
                 repository.write_frame(identifier,records,runs,processed,self.dropped,last_timestamp)
                 frame.source_id=self.request_id
                 self.packet.emit({'analysis_id':identifier,'frame':frame,'tracks':records,'overlays':overlays,
-                    'detection_count':sum(region.contains(d.foot) and d.confidence>=self.config.get('confidence',.35) for d in detections),'runs':runs,
+                    'detection_count':sum(region.contains(d.foot) and d.confidence>=self.config.get('confidence',.35) for d in detections),
+                    'detector_status':getattr(detector,'status','人物モデル'),'runs':runs,
                     'summary':summarize(runs,self.calibration.lanes),'processed':processed,'dropped':self.dropped,
                     'inference_ms':(time.perf_counter()-tick)*1000,'elapsed_seconds':time.perf_counter()-start})
         except Exception as exc:

@@ -26,9 +26,15 @@ class AnalysisPanel(QScrollArea):
         self.review_end_ms=None
         self.setWidgetResizable(True)
         body=QWidget(); layout=QVBoxLayout(body)
+        self.detection_backend=QComboBox()
+        self.detection_backend.addItem('移動対象（モデル不要・検証中）','motion')
+        self.detection_backend.addItem('人物の見た目を判定（YOLOX）','yolox')
+        layout.addWidget(QLabel('検出方式'))
+        layout.addWidget(self.detection_backend)
         self.model=QLineEdit(str(DEFAULT_MODEL))
         self.model.setReadOnly(True)
-        layout.addWidget(QLabel('人物モデル：YOLOX-s / OpenCV CPU'))
+        self.model_label=QLabel('人物モデル：YOLOX-s / OpenCV CPU')
+        layout.addWidget(self.model_label)
         layout.addWidget(self.model)
         self.choose_model=QPushButton('モデルファイルを指定…')
         self.choose_model.clicked.connect(self.browse_model)
@@ -37,6 +43,7 @@ class AnalysisPanel(QScrollArea):
         self.model_hint.setWordWrap(True)
         layout.addWidget(self.model_hint)
         form=QFormLayout()
+        self.settings_form=form
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.processing_mode=QComboBox()
         self.processing_mode.addItem('再生優先（1倍速・解析は間引き）','realtime')
@@ -52,16 +59,25 @@ class AnalysisPanel(QScrollArea):
         self.tiles=QCheckBox('小さい人物向けの分割推論（処理時間増加）')
         self.tiles.setChecked(True)
         form.addRow(self.tiles)
+        self.motion_min_area=QSpinBox();self.motion_min_area.setRange(2,1000);self.motion_min_area.setValue(3)
+        self.motion_min_area.setToolTip('元映像の切り出し画像で、変化が連結した最小画素数。小さい選手を消さないため既定は3です。')
+        form.addRow('移動対象の最小面積（画素）',self.motion_min_area)
+        self.motion_delta=QSpinBox();self.motion_delta.setRange(4,80);self.motion_delta.setValue(12)
+        self.motion_delta.setToolTip('背景との差の強さ。小さくすると弱い動きを拾い、雪の明暗変化も拾いやすくなります。人物の確率ではありません。')
+        form.addRow('背景との差のしきい値',self.motion_delta)
         layout.addLayout(form)
         self.confidence.valueChanged.connect(self.settings_changed)
         self.processing_mode.currentIndexChanged.connect(self.settings_changed)
         self.tiles.toggled.connect(self.settings_changed)
         self.model.textChanged.connect(self.settings_changed)
+        self.motion_min_area.valueChanged.connect(self.settings_changed)
+        self.motion_delta.valueChanged.connect(self.settings_changed)
+        self.detection_backend.currentIndexChanged.connect(self.backend_changed)
         self.stop=QPushButton('■ 分析停止')
         self.stop.clicked.connect(window.stop_analysis)
         self.stop.setEnabled(False)
         layout.addWidget(self.stop)
-        self.progress=QLabel('未実行。位置設定とモデルを確認して「分析開始」を押してください。')
+        self.progress=QLabel('未実行。位置設定と検出方式を確認して「分析開始」を押してください。')
         self.progress.setWordWrap(True)
         layout.addWidget(self.progress)
         self.summary=QLabel('集計なし')
@@ -141,14 +157,33 @@ class AnalysisPanel(QScrollArea):
         layout.addStretch()
         self.setWidget(body)
         self.set_active(False)
+        self.loading=True
+        self.backend_changed()
+        self.loading=False
 
     def config(self):
         return {'model_path':self.model.text(),'confidence':self.confidence.value(),'tiles':self.tiles.isChecked(),
+                'detection_backend':self.detection_backend.currentData(),'motion_min_area':self.motion_min_area.value(),
+                'motion_delta':self.motion_delta.value(),
                 'processing_mode':self.processing_mode.currentData(),
-                'tracker':'two-stage-predictive-IoU','backend':'OpenCV CPU'}
+                'tracker':'two-stage-predictive-IoU','backend':'OpenCV motion CPU' if not self.requires_model else 'OpenCV CPU'}
+
+    @property
+    def requires_model(self):
+        return self.detection_backend.currentData()=='yolox'
+
+    def backend_changed(self):
+        model=self.requires_model
+        for widget in (self.model_label,self.model,self.choose_model,self.model_hint):widget.setVisible(model)
+        for widget in (self.confidence,self.tiles):self.settings_form.setRowVisible(widget,model)
+        for widget in (self.motion_min_area,self.motion_delta):self.settings_form.setRowVisible(widget,not model)
+        self.settings_changed()
 
     def apply_config(self,config):
         self.loading=True
+        self.detection_backend.setCurrentIndex(max(0,self.detection_backend.findData(config.get('detection_backend','motion'))))
+        self.motion_min_area.setValue(config.get('motion_min_area',3))
+        self.motion_delta.setValue(config.get('motion_delta',12))
         self.processing_mode.setCurrentIndex(max(0,self.processing_mode.findData(config.get('processing_mode','realtime'))))
         self.model.setText(config.get('model_path',str(DEFAULT_MODEL)))
         self.confidence.setValue(config.get('confidence',.35))
@@ -168,7 +203,7 @@ class AnalysisPanel(QScrollArea):
 
     def set_active(self,active):
         self.stop.setEnabled(active)
-        for widget in [self.confirm_event,self.exclude_event,self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
+        for widget in [self.detection_backend,self.motion_min_area,self.motion_delta,self.confirm_event,self.exclude_event,self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
                        self.save_review,self.merge,self.unmerge,self.add,self.video,self.interrupted]:
             widget.setEnabled(not active)
 
@@ -177,7 +212,8 @@ class AnalysisPanel(QScrollArea):
             self.data={'id':packet['analysis_id'],'calibration':self.window.workflow.calibration.to_dict(),'status':'running'}
         self.data['runs']=packet['runs']
         self.show_summary(packet['summary'])
-        self.progress.setText(f"解析 {packet['processed']}フレーム / 未解析 {packet['dropped']}枚\n処理 {packet['inference_ms']:.0f}ms/枚 / 最終解析時刻 {packet['frame'].timestamp_ms/1000:.2f}秒\n人物候補 {packet.get('detection_count',0)} / 確定追跡 {len(packet['tracks'])}\n再生時刻は映像下の時計を参照してください。")
+        target='移動対象' if not self.requires_model else '人物'
+        self.progress.setText(f"解析 {packet['processed']}フレーム / 未解析 {packet['dropped']}枚\n処理 {packet['inference_ms']:.0f}ms/枚 / 最終解析時刻 {packet['frame'].timestamp_ms/1000:.2f}秒\n{target}候補 {packet.get('detection_count',0)} / 追跡 {len(packet['tracks'])}\n"+packet.get('detector_status',''))
         self.fill_events()
         self.fill_runs()
 
@@ -354,7 +390,7 @@ class AnalysisPanel(QScrollArea):
         self.details.clear()
         self.reason.clear()
         self.summary.setText('集計なし')
-        self.progress.setText('未実行。位置設定とモデルを確認して「分析開始」を押してください。')
+        self.progress.setText('未実行。位置設定と検出方式を確認して「分析開始」を押してください。')
 
     def add_run(self):
         def add(repo):

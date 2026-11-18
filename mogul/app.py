@@ -513,7 +513,7 @@ class MainWindow(QMainWindow):
                 course_position(c,c.middle[0])
         except ValueError as exc:
             reasons.append(str(exc))
-        if not Path(self.analysis_panel.model.text()).is_file():
+        if self.analysis_panel.requires_model and not Path(self.analysis_panel.model.text()).is_file():
             reasons.append('人物モデル未導入です（分析・結果タブを確認）')
         self.analyze_button.setEnabled(not reasons and not self.analysis_active and not self.landmarks_panel.busy)
         self.analyze_button.setText('分析中…' if self.analysis_active else '分析開始')
@@ -804,7 +804,7 @@ class MainWindow(QMainWindow):
         if not self.controller.can_start(self.source_ok):
             self.notice.setText(' ／ '.join(self.workflow.reasons(self.source_ok)))
             return
-        if not Path(self.analysis_panel.model.text()).is_file():
+        if self.analysis_panel.requires_model and not Path(self.analysis_panel.model.text()).is_file():
             self.right_tabs.setCurrentIndex(3)
             self.notice.setText('人物モデルを導入してください。')
             return

@@ -77,22 +77,24 @@ class Track:
 
 
 class AthleteTracker:
-    def __init__(self,high=.35,low=.1,max_lost_ms=1500,min_hits=3):
+    def __init__(self,high=.35,low=.1,max_lost_ms=1500,min_hits=3,project=None):
         self.high,self.low=high,low
         self.max_lost_ms,self.min_hits=max_lost_ms,min_hits
         self.tracks=[]
         self.next_id=1
+        self.project=project or (lambda p:np.asarray(p,float))
 
     def _match(self,tracks,detections,timestamp):
         if not tracks or not detections:
             return []
         costs=np.full((len(tracks),len(detections)),1e6)
+        feet=[self.project(d.foot) for d in detections]
         for i,track in enumerate(tracks):
             predicted=track.predicted(timestamp)
-            point=np.array([(predicted[0]+predicted[2])/2,predicted[3]])
-            diagonal=np.linalg.norm(np.array(predicted[2:])-predicted[:2])
+            point=self.project([(predicted[0]+predicted[2])/2,predicted[3]])
+            diagonal=np.linalg.norm(self.project(predicted[2:])-self.project(predicted[:2]))
             for j,detection in enumerate(detections):
-                distance=np.linalg.norm(np.array(detection.foot)-point)
+                distance=np.linalg.norm(feet[j]-point)
                 intersection=iou(predicted,detection.bbox)
                 gate=max(.025,min(.15,diagonal*1.2))
                 if intersection>=.1 or distance<gate:

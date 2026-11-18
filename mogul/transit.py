@@ -37,6 +37,14 @@ class LaneTransit:
                     if 0<=x<=1:
                         run.entry_lane=lane; run.transit_state='in_lane'
                         break
+                # Motion blobs do not have anatomical feet. Use a short entrance
+                # zone as well, so one-pixel fragmentation at the exact top line
+                # does not lose an otherwise observed downstream entrance.
+                if self.c.analysis_config.get('detection_backend')=='motion' and 0<=a[1]<=.12<b[1] and b[1]-a[1]<=.35:
+                    f=(.12-a[1])/(b[1]-a[1]);x=a[0]+f*(b[0]-a[0])
+                    if 0<=x<=1:
+                        run.entry_lane=lane;run.transit_state='in_lane'
+                        break
         lane=run.entry_lane
         if lane is None or run.transit_state!='in_lane' or not previous:
             return
@@ -85,6 +93,8 @@ class LaneTransit:
             else:
                 run.transit_state='uncertain'
         # Conservative posture anomaly candidate. Not a confirmed stumble/cause diagnosis.
+        if self.c.analysis_config.get('detection_backend')=='motion':
+            return  # a foreground blob is not a person's posture bounding box
         x1,y1,x2,y2=track.bbox
         width,height=self.c.source.get('width',1),self.c.source.get('height',1)
         if self.c.rotation in (90,270):

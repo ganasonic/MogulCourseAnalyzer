@@ -278,7 +278,8 @@ class CalibrationView(QGraphicsView):
                          (x2-x1)*self.width_px+2*pad_x,(y2-y1)*self.height_px+2*pad_y)
             item.setZValue(15)
             suffix=' / 追従補間' if track.get('interpolated') else ''
-            text=self.scene().addText(f"T{track['track_id']} / {track['run_id'][:6]} / {track.get('lane_id') or '?'} / {track['confidence']:.2f}"+suffix)
+            score='移動対象' if track.get('detection_kind')=='motion' else f"{track['confidence']:.2f}"
+            text=self.scene().addText(f"T{track['track_id']} / {track['run_id'][:6]} / {track.get('lane_id') or '?'} / {score}"+suffix)
             text.setDefaultTextColor(QColor('#8bff72'))
             text.setFlag(QGraphicsItem.ItemIgnoresTransformations)
             text.setPos(x1*self.width_px,y1*self.height_px-22)

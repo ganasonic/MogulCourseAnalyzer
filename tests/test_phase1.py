@@ -366,7 +366,7 @@ def test_restart_restore_and_controls(qtbot, window, calibration, video_path):
     assert window.workflow.calibration.lanes[2].name.endswith('（変更済み）')
     assert all(x.confirmed for x in window.workflow.calibration.lanes)
     assert not window.view.handles
-    assert window.analyze_button.isEnabled() == Path(window.analysis_panel.model.text()).is_file()
+    assert window.analyze_button.isEnabled()  # default motion backend needs no person model
 
 
 def test_mirror_undo_and_no_silent_reset(window, calibration):

@@ -377,6 +377,7 @@ def window(qtbot,tmp_path,course):
     writer.release()
     w=MainWindow(tmp_path/'gui.sqlite',startup=False)
     qtbot.addWidget(w,before_close_func=lambda w:setattr(w.workflow,'dirty',False))
+    w.analysis_panel.detection_backend.setCurrentIndex(w.analysis_panel.detection_backend.findData('yolox'))
     w.workflow.calibration=course
     w.show()
     w.open_source({'kind':'file','path':str(path)})

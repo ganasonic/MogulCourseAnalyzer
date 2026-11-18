@@ -13,6 +13,8 @@ class CourseRegion:
         self.polygons=[calibration.lane_polygon(i) for i in range(len(calibration.lanes))]
         self.transforms=[]
         self.guards=[]
+        self.project_matrix=cv2.getPerspectiveTransform(np.asarray(calibration.middle,np.float32),
+            np.array([[0,0],[1,0],[1,1],[0,1]],np.float32))
         for polygon in self.polygons:
             matrix=cv2.getPerspectiveTransform(np.asarray(polygon,np.float32),
                 np.array([[0,0],[1,0],[1,1],[0,1]],np.float32))
@@ -30,6 +32,10 @@ class CourseRegion:
     def contains(self,point):
         return any(contains(polygon,point) for polygon in self.polygons)
 
+    def project(self,point):
+        value=self.project_matrix@np.array([point[0],point[1],1.])
+        return value[:2]/value[2]
+
     def can_start(self,point):
         if self.contains(point):
             return True
@@ -44,6 +50,16 @@ class CourseRegion:
 
     def can_observe(self,point):
         return any(contains(polygon,point) for polygon in self.guards)
+
+    def can_enter(self,point):
+        """Motion-only tracking starts at the entrance, never at mid-course noise."""
+        if not self.can_observe(point):
+            return False
+        for matrix in self.transforms:
+            x,y=cv2.perspectiveTransform(np.asarray([[point]],np.float32),matrix)[0,0]
+            if 0<=x<=1 and -.10<=y<=.12:
+                return True
+        return False
 
     def crop(self,image):
         """Only the guarded lane union is visible to the person model."""

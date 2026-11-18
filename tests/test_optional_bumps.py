@@ -81,7 +81,7 @@ def test_gui_center_and_two_click_bulk(qtbot,tmp_path,course):
     def click(point):
         qtbot.mouseClick(view.viewport(),Qt.LeftButton,pos=view.mapFromScene(point[0]*640,point[1]*400))
     try:
-        assert w.analyze_button.isEnabled()==Path(panel.window.analysis_panel.model.text()).is_file()
+        assert w.analyze_button.isEnabled()  # model-free motion backend is the default
         panel.tabs.setCurrentIndex(1)
         panel.tool.setCurrentIndex(panel.tool.findData('add_bump_center'))
         click([.3,.3])

@@ -72,6 +72,12 @@ class AnalyticsEngine:
             if run.id in claimed or any(i in visible_ids for i in run.track_ids) or not 0<gap<=self.relink_ms:
                 continue
             predicted=np.asarray(run.point)+np.asarray(run.velocity)*gap/1000
+            if self.c.analysis_config.get('detection_backend')=='motion':
+                lane=self.lane_for(track.foot)
+                if lane is not None and run.lane is not None and lane!=run.lane:
+                    continue
+                if np.linalg.norm(self.region.project(track.foot)-self.region.project(predicted))>.15:
+                    continue
             distance=np.linalg.norm(np.asarray(track.foot)-predicted)
             if distance<.06:
                 matches.append((distance,run))
@@ -144,7 +150,8 @@ class AnalyticsEngine:
             run.confidence=track.confidence
             records.append({'track_id':track.id,'run_id':run.id,'timestamp_ms':timestamp,'frame_index':frame_index,
                             'bbox':track.bbox[:],'point':list(point),'lane_id':run.lane if lane==run.lane else None,
-                            'tentative':track.hits<3,'confidence':track.confidence})
+                            'tentative':track.hits<3,'confidence':track.confidence,
+                            'detection_kind':'motion' if self.c.analysis_config.get('detection_backend')=='motion' else 'person'})
         return records
 
     def snapshot(self):
