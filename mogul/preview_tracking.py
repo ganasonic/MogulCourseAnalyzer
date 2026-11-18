@@ -17,7 +17,7 @@ class PreviewTracking:
     def inside(self,tracks):
         if self.region is None:
             return tracks
-        return [t for t in tracks if self.region.contains([(t['bbox'][0]+t['bbox'][2])/2,t['bbox'][3]])]
+        return [t for t in tracks if (self.region.tracking_contains if t.get('course_tracking') else self.region.contains)([(t['bbox'][0]+t['bbox'][2])/2,t['bbox'][3]])]
 
     def frame(self,image,timestamp,index):
         gray=self.gray(image)

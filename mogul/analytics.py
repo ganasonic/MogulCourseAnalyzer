@@ -44,6 +44,14 @@ class Run:
     upright_samples: int=0
     transit_anchor: list=field(default_factory=list)
     transit_anchor_ms: float=0
+    entry_kind: str='unknown'
+    count_eligible: bool=False
+    resumes: list=field(default_factory=list)
+    motion_history: list=field(default_factory=list)
+    baseline_speed: float=0
+    baseline_aspect: float=0
+    slow_since: float | None=None
+    slow_events: list=field(default_factory=list)
 
 
 class AnalyticsEngine:
@@ -74,7 +82,7 @@ class AnalyticsEngine:
             predicted=np.asarray(run.point)+np.asarray(run.velocity)*gap/1000
             if self.c.analysis_config.get('detection_backend')=='motion':
                 lane=self.lane_for(track.foot)
-                if lane is not None and run.lane is not None and lane!=run.lane:
+                if lane is not None and run.lane is not None and lane!=run.lane and run.transit_state!='outside_lane':
                     continue
                 if np.linalg.norm(self.region.project(track.foot)-self.region.project(predicted))>.15:
                     continue
@@ -106,6 +114,7 @@ class AnalyticsEngine:
             previous=run.point[:]
             previous_ms=run.last_ms
             self.transit.update(run,track,previous,previous_ms,timestamp)
+            self.transit.anomalies(run,track,previous,previous_ms,timestamp)
             depth=course_position(self.c,point)[1]
             lane=self.lane_for(point,run.lane)
             if run.first_lane is None and lane is not None:
@@ -151,6 +160,8 @@ class AnalyticsEngine:
             records.append({'track_id':track.id,'run_id':run.id,'timestamp_ms':timestamp,'frame_index':frame_index,
                             'bbox':track.bbox[:],'point':list(point),'lane_id':run.lane if lane==run.lane else None,
                             'tentative':track.hits<3,'confidence':track.confidence,
+                            'course_tracking':True,'entry_kind':run.entry_kind,'count_eligible':run.count_eligible,
+                            'transit_state':run.transit_state,'origin_lane_id':run.entry_lane,
                             'detection_kind':'motion' if self.c.analysis_config.get('detection_backend')=='motion' else 'person'})
         return records
 
@@ -173,7 +184,10 @@ def summarize(runs,lanes):
         groups.setdefault(current['id'],[]).append(run)
     result={'unique_runs':0,'course_changes':0,'starts':{l.id:0 for l in lanes},'passes':{l.id:0 for l in lanes},'groups':{'blue':0,'red':0,'neutral':0},'unreviewed':0}
     result['completions']={l.id:0 for l in lanes}
-    result['entry_unobserved']=sum(r.get('transit_state','entry_unobserved')=='entry_unobserved' for r in runs if r.get('review')!='excluded')
+    result['entry_unobserved']=sum(r.get('entry_lane') is None for r in runs if r.get('review')!='excluded')
+    result['jump_entries']=sum(r.get('entry_kind')=='bottom' for r in runs if r.get('review')!='excluded')
+    result['side_entries']=sum(r.get('entry_kind')=='side' for r in runs if r.get('review')!='excluded')
+    result['resumed_runs']=sum(bool(r.get('resumes')) for r in runs if r.get('review')!='excluded')
     result['uncertain_transits']=sum(r.get('transit_state')=='uncertain' for r in runs if r.get('review')!='excluded')
     lane_groups={lane.id:lane.group for lane in lanes}
     for root,parts in groups.items():

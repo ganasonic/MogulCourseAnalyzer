@@ -21,16 +21,16 @@ def detection(x,y):
     return Detection([x-.02,y-.08,x+.02,y],.9)
 
 
-def test_roi_crops_and_masks_background_instead_of_using_the_whole_middle():
+def test_roi_preserves_course_gaps_for_existing_tracks_but_not_new_staff():
     c=course()
     c.move_lane_corner(0,0,[.3,.15]);c.move_lane_corner(1,1,[.7,.15])
     region=CourseRegion(c)
     image=np.full((200,320,3),255,np.uint8)
     crop,(x,y)=region.crop(image)
-    assert crop.shape[0]*crop.shape[1]<200*320*.8
+    assert crop.shape[0]*crop.shape[1]<200*320*.9
     assert x>0 and y>0
-    # A rectangular crop's corners are outside the trapezoidal lane union.
-    assert np.any(crop==114) and np.any(crop==255)
+    # The enclosing course is rectangular here: gaps remain observable for tracked skiers.
+    assert np.all(crop==255)
     assert not region.contains([.1,.5])  # inside middle, outside all lanes
     assert not region.can_start([.82,.4])
 
@@ -43,7 +43,7 @@ def test_staff_cannot_create_tracks_but_existing_skier_can_cross_boundary():
     assert len(second)==1 and second[0].id==1 and second[0].foot[0]>.8
     assert tracker.next_id==2
     assert region.can_start([.35,.13])  # narrow upstream entry band
-    assert not region.can_start([.35,.9])  # no new downstream staff tracks
+    assert region.can_start([.35,.9])  # downstream arrivals must be tracked as uncounted jumps
 
 
 def test_detector_crop_coordinates_map_back_to_video_coordinates():

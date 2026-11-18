@@ -131,6 +131,34 @@ class AnalysisRepository(EventRepository):
             db.execute('INSERT INTO run_reviews(analysis_id,run_id,created_at,reason,before_json,after_json) VALUES(?,?,?,?,?,?)',
                        (identifier,run_id,now(),reason.strip(),json.dumps(before,ensure_ascii=False),json.dumps(run,ensure_ascii=False)))
 
+    def add_event(self,identifier,run_id,kind,timestamp,reason):
+        if not reason.strip() or kind not in ('stumble_candidate','fall_candidate','course_out','course_exit'):
+            raise ValueError('イベント種別と理由を指定してください')
+        data=self.load_analysis(identifier)
+        if data['status']=='running':raise ValueError('分析停止後に追加してください')
+        run=next((r for r in data['runs'] if r['id']==run_id),None)
+        if run is None:raise ValueError('滑走を選択してください')
+        with closing(self._connect()) as db:
+            rows=db.execute('SELECT data_json FROM tracks WHERE analysis_id=? AND timestamp_ms BETWEEN ? AND ? ORDER BY ABS(timestamp_ms-?)',
+                            (identifier,timestamp-500,timestamp+500,timestamp)).fetchall()
+        by_id={r['id']:r for r in data['runs']}
+        def belongs(other):
+            seen=set()
+            while other in by_id and other not in seen:
+                if other==run_id:return True
+                seen.add(other);other=by_id[other].get('merged_into')
+            return False
+        record=next((r for row in rows for r in [json.loads(row[0])] if belongs(r['run_id'])),None)
+        if record is None:raise ValueError('指定時刻付近に選択滑走の位置記録がありません')
+        before=deepcopy(run)
+        run.setdefault('events',[]).append({'id':str(uuid4()),'kind':kind,'point':record['point'],
+            'timestamp_ms':record['timestamp_ms'],'lane_id':record.get('lane_id') or run.get('lane'),
+            'review':'confirmed','bump_id':None,'bump_label':None,'origin':'manual'})
+        with closing(self._connect()) as db,db:
+            db.execute('UPDATE runs SET data_json=? WHERE analysis_id=? AND id=?',(json.dumps(run,ensure_ascii=False),identifier,run_id))
+            db.execute('INSERT INTO run_reviews(analysis_id,run_id,created_at,reason,before_json,after_json) VALUES(?,?,?,?,?,?)',
+                       (identifier,run_id,now(),reason.strip(),json.dumps(before,ensure_ascii=False),json.dumps(run,ensure_ascii=False)))
+
     def add_manual(self,identifier,lane,timestamp,reason):
         if not reason.strip():
             raise ValueError('手動追加の理由を入力してください')

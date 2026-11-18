@@ -112,13 +112,14 @@ class AnalysisWorker(QThread):
                 else:
                     detections=detector.detect(image,self.calibration.middle,tiled=self.config.get('tiles',True))
                 detections=[d for d in detections if region.can_observe(d.foot)]
-                visible=tracker.update(detections,frame.timestamp_ms,can_start=region.can_enter if motion else region.can_start)
+                visible=tracker.update(detections,frame.timestamp_ms,can_start=region.can_start)
                 records=engine.update(visible,frame.timestamp_ms,frame.index)
-                overlays=[r for r in records if region.contains(r['point']) and (not motion or not r['tentative'])]
+                overlays=[r for r in records if region.tracking_contains(r['point']) and (not motion or not r['tentative'])]
                 # Once an already tracked skier has crossed out, retain the event
                 # evidence, then stop spending inference/tracker work on that ID.
-                retired={t.id for t in visible if t.id in engine.track_runs and not region.contains(t.foot) and
-                    engine.runs[engine.track_runs[t.id]].transit_state in ('completed','course_out','uncertain')}
+                retired={t.id for t in visible if t.id in engine.track_runs and
+                    (not region.tracking_contains(t.foot) and not region.can_enter(t.foot) or
+                     engine.runs[engine.track_runs[t.id]].transit_state=='completed')}
                 tracker.tracks=[t for t in tracker.tracks if t.id not in retired]
                 for detection in detections:
                     if motion:

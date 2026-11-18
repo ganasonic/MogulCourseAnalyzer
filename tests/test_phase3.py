@@ -408,7 +408,7 @@ def test_gui_analysis_results_manual_review_and_replay(qtbot,window,tmp_path,mon
     timer.stop()
     panel=window.analysis_panel
     assert ticks and window.analysis_result['status']=='completed'
-    assert 'ユニーク滑走 1' in panel.summary.text()
+    assert '参考の区間移動 1' in panel.summary.text()
     assert window.right_tabs.isTabEnabled(0) and panel.runs.count()==1
     panel.runs.setCurrentRow(0)
     panel.reason.setText('検証用の滑走確認')
@@ -417,7 +417,7 @@ def test_gui_analysis_results_manual_review_and_replay(qtbot,window,tmp_path,mon
     assert panel.data['runs'][0]['review']=='confirmed'
     panel.reason.setText('検証用の見逃し追加')
     panel.add_run()
-    assert len(panel.data['runs'])==2 and 'ユニーク滑走 2' in panel.summary.text()
+    assert len(panel.data['runs'])==2 and '参考の区間移動 2' in panel.summary.text()
     panel.runs.setCurrentRow(0)
     panel.open_video()
     qtbot.waitUntil(lambda:window.source_ok,timeout=8000)
@@ -450,7 +450,7 @@ def test_gui_counts_without_any_gate_or_bump(qtbot,window,tmp_path,monkeypatch):
     window.start_analysis()
     qtbot.waitUntil(lambda:not window.analysis_active,timeout=8000)
     assert window.analysis_result['status']=='completed'
-    assert 'ユニーク滑走 1' in window.analysis_panel.summary.text()
+    assert '参考の区間移動 1' in window.analysis_panel.summary.text()
     assert not window.workflow.calibration.bumps and not window.workflow.calibration.control_gates
 
 
@@ -487,7 +487,7 @@ def test_mid_lane_appearance_never_counts_as_complete(course):
 def test_red_lane_course_out_marker_and_no_completion(course):
     engine=transit_sequence(course,[(.65,.02),(.65,.08),(.65,.2),(.72,.3),(.79,.4),(.83,.43),(.85,.5)])
     run=engine.snapshot()[0]
-    assert run['transit_state']=='course_out' and run['completed_lane'] is None
+    assert run['transit_state']=='outside_lane' and run['completed_lane'] is None
     assert len(run['events'])==1 and run['events'][0]['kind']=='course_out'
     assert run['events'][0]['lane_id']=='B' and abs(run['events'][0]['point'][0]-.8)<1e-5
     assert summarize(engine.snapshot(),course.lanes)['completions']['B']==0

@@ -3,7 +3,8 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem
 from .landmarks import course_position
-from .course_region import in_course
+from .course_region import visible_track
+from .event_styles import event_style
 
 
 class CourseMap(QGraphicsView):
@@ -61,7 +62,7 @@ class CourseMap(QGraphicsView):
             polygon(bump.polygon,'#ffbe55')
             marker('bump',bump,bump.center,bump.label,'#ffbe55')
         for track in tracks or []:
-            if not in_course(c,track['point']):
+            if not visible_track(c,track):
                 continue
             p=position(track['point'])
             item=self.scene().addEllipse(-5,-5,10,10,QPen(QColor('#8bff72')),QColor('#8bff72'))
@@ -69,13 +70,18 @@ class CourseMap(QGraphicsView):
             text=self.scene().addText(f"T{track['track_id']} / {track.get('lane_id') or '?'}")
             text.setDefaultTextColor(QColor('#8bff72'))
             text.setPos(p+QPointF(8,-12)); text.setZValue(10)
+        event_locations={}
         for event in self.analysis_events:
             p=position(event['point'])
-            color=QColor('#ff5252' if event['kind']=='course_out' else '#ffa726')
+            key=(round(p.x()),round(p.y()))
+            offset=event_locations.get(key,0);event_locations[key]=offset+1
+            label,code=event_style(event['kind']);color=QColor(code)
+            if event.get('review')=='confirmed':label=label.removesuffix('候補')
             pen=QPen(color,3,Qt.SolidLine if event.get('review')=='confirmed' else Qt.DashLine)
-            item=self.scene().addEllipse(-8,-8,16,16,pen); item.setPos(p); item.setZValue(12)
-            text=self.scene().addText(('逸脱' if event['kind']=='course_out' else '姿勢候補')+f" {event['timestamp_ms']/1000:.1f}s")
-            text.setDefaultTextColor(color); text.setPos(p+QPointF(10,-10)); text.setZValue(12)
+            radius=8+offset*3
+            item=self.scene().addEllipse(-radius,-radius,radius*2,radius*2,pen); item.setPos(p); item.setZValue(12)
+            text=self.scene().addText(label+f" {event['timestamp_ms']/1000:.1f}s")
+            text.setDefaultTextColor(color); text.setPos(p+QPointF(10,-10+18*offset)); text.setZValue(12)
         self.scene().setSceneRect(self.scene().itemsBoundingRect().adjusted(-15,-15,15,15))
         self.fitInView(self.sceneRect(),Qt.KeepAspectRatio)
 

@@ -11,6 +11,7 @@ from .athlete_detector import DEFAULT_MODEL
 from .analytics import summarize
 from .analysis_repository import AnalysisRepository
 from .models import Calibration
+from .event_styles import event_style
 
 STATUS_LABELS={'running':'実行中','completed':'完了','stopped':'停止','failed':'失敗','interrupted':'中断'}
 
@@ -85,7 +86,7 @@ class AnalysisPanel(QScrollArea):
         layout.addWidget(self.summary)
         self.event_list=QListWidget()
         self.event_list.setMinimumHeight(95)
-        layout.addWidget(QLabel('異常候補（赤：レーン逸脱／橙：姿勢異常、要確認）'))
+        layout.addWidget(QLabel('異常候補：赤＝逸脱／橙＝躓き／桃＝転倒（要確認）'))
         layout.addWidget(self.event_list)
         self.confirm_event=QPushButton('イベント確認済み（理由必須）')
         self.confirm_event.clicked.connect(lambda:self.edit_event('confirmed'))
@@ -132,10 +133,17 @@ class AnalysisPanel(QScrollArea):
         self.manual_lane=QComboBox()
         form.addRow('見逃し滑走の追加レーン',self.manual_lane)
         self.manual_time=QDoubleSpinBox(); self.manual_time.setRange(0,8640000); self.manual_time.setDecimals(3)
-        form.addRow('手動追加時刻（秒）',self.manual_time)
+        form.addRow('手動操作の時刻（秒）',self.manual_time)
+        self.event_kind=QComboBox()
+        for label,kind in [('躓き','stumble_candidate'),('転倒','fall_candidate'),('レーン逸脱','course_out'),('コース逸脱','course_exit')]:
+            self.event_kind.addItem(label,kind)
+        form.addRow('追加イベント',self.event_kind)
         self.reason=QLineEdit(); self.reason.setPlaceholderText('修正・統合・追加の理由（必須）')
         form.addRow(self.reason)
         layout.addLayout(form)
+        self.add_event_button=QPushButton('選択滑走にイベントを追加（理由必須）')
+        self.add_event_button.clicked.connect(self.add_event)
+        layout.addWidget(self.add_event_button)
         self.save_review=QPushButton('選択滑走の修正を保存')
         self.save_review.clicked.connect(self.apply_review)
         layout.addWidget(self.save_review)
@@ -203,7 +211,7 @@ class AnalysisPanel(QScrollArea):
 
     def set_active(self,active):
         self.stop.setEnabled(active)
-        for widget in [self.detection_backend,self.motion_min_area,self.motion_delta,self.confirm_event,self.exclude_event,self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
+        for widget in [self.add_event_button,self.detection_backend,self.motion_min_area,self.motion_delta,self.confirm_event,self.exclude_event,self.processing_mode,self.model,self.choose_model,self.confidence,self.tiles,self.history,self.load_button,
                        self.save_review,self.merge,self.unmerge,self.add,self.video,self.interrupted]:
             widget.setEnabled(not active)
 
@@ -219,9 +227,11 @@ class AnalysisPanel(QScrollArea):
 
     def show_summary(self,summary):
         self.window.update_lane_totals(summary.get('completions',{}))
-        lines=[f"ユニーク滑走 {summary['unique_runs']} / 集計内未確認 {summary['unreviewed']}",
+        lines=[f"コース完走 {sum(summary.get('completions',{}).values())}",
+               f"参考の区間移動 {summary['unique_runs']}（カウント対象外を含む） / 未確認 {summary['unreviewed']}",
                f"入口未確認 {summary.get('entry_unobserved',0)} / 追跡不明 {summary.get('uncertain_transits',0)}（完走へ加算しません）",
-               '開始人数: '+' / '.join(f'{key} {value}' for key,value in summary['starts'].items()),
+               f"横流入 {summary.get('side_entries',0)} / 下端流入 {summary.get('jump_entries',0)} / 復帰 {summary.get('resumed_runs',0)}",
+               '参考・開始記録: '+' / '.join(f'{key} {value}' for key,value in summary['starts'].items()),
                '区間移動人数（完走とは別）: '+' / '.join(f'{key} {value}' for key,value in summary['passes'].items()),
                f"ブルー {summary['groups']['blue']} / レッド {summary['groups']['red']} / 中立 {summary['groups']['neutral']}",
                f"コースチェンジ {summary['course_changes']}件"]
@@ -234,7 +244,8 @@ class AnalysisPanel(QScrollArea):
             if run.get('review')=='excluded':
                 continue
             for event in run.get('events',[]):
-                label='レーン逸脱' if event['kind']=='course_out' else '姿勢異常候補'
+                label,_=event_style(event['kind'])
+                if event.get('review')=='confirmed':label=label.removesuffix('候補')
                 self.event_list.addItem(f"{event['timestamp_ms']/1000:.2f}s / {event['lane_id']} / {label} / "+{'unreviewed':'未確認','confirmed':'確認済','excluded':'除外'}.get(event.get('review'),'未確認'))
                 item=self.event_list.item(self.event_list.count()-1)
                 item.setData(Qt.UserRole,(run['id'],event['id']))
@@ -247,12 +258,13 @@ class AnalysisPanel(QScrollArea):
             run,event=item.data(Qt.UserRole)
             self.edit(lambda repo:repo.review_event(self.data['id'],run,event,state,self.reason.text()))
 
+    def add_event(self):
+        if self.selected:
+            self.edit(lambda repo:repo.add_event(self.data['id'],self.selected,self.event_kind.currentData(),self.manual_time.value()*1000,self.reason.text()))
+
     def fill_runs(self):
         self.runs.blockSignals(True)
         self.runs.clear()
-        self.event_list.clear()
-        self.window.update_lane_totals({})
-        self.window.update_analysis_events([],0)
         for run in self.data.get('runs',[]):
             state='除外' if run.get('review')=='excluded' else ('集計' if run['qualified'] else '未集計')
             label=f"{run['id'][:8]} / T{','.join(map(str,run['track_ids'])) or '手動'} / {state}"
@@ -387,6 +399,9 @@ class AnalysisPanel(QScrollArea):
         self.review_analysis_id=None
         self.review_end_ms=None
         self.runs.clear()
+        self.event_list.clear()
+        self.window.update_lane_totals({})
+        self.window.update_analysis_events([],0)
         self.details.clear()
         self.reason.clear()
         self.summary.setText('集計なし')

@@ -2,6 +2,7 @@
 from collections import deque
 from pathlib import Path
 import time
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QKeySequence
@@ -25,7 +26,7 @@ from .analysis_worker import AnalysisWorker
 from .analysis_repository import AnalysisRepository
 from .landmarks import course_position
 from .preview_tracking import PreviewTracking
-from .course_region import CourseRegion,in_course
+from .course_region import CourseRegion,visible_track
 
 
 def timecode(ms):
@@ -97,7 +98,7 @@ class MainWindow(QMainWindow):
         root.addLayout(header)
         actions = QHBoxLayout()
         self.source_button = self._button('映像ソースを変更…', self.select_source, actions)
-        self._button('設定を保存  Ctrl+S', self.save, actions)
+        self.save_as_button=self._button('名前を付けて設定保存  Ctrl+S', self.save_as, actions)
         self._button('設定を復元…', self.restore_dialog, actions)
         self._button('元に戻す  Ctrl+Z', self.undo, actions)
         actions.addStretch()
@@ -150,7 +151,7 @@ class MainWindow(QMainWindow):
         self.seek.setRange(0, 0)
         self.seek.sliderReleased.connect(lambda: self.worker.command('seek', self.seek.value()))
         video_layout.addWidget(self.seek)
-        video_layout.addWidget(QLabel('上端から入り、同じレーンの下端へ抜けた人数（自動推定・要確認）'))
+        video_layout.addWidget(QLabel('上端から元のレーン下端への人数（復帰可／横・下端流入は除外、要確認）'))
         self.lane_totals=QHBoxLayout()
         video_layout.addLayout(self.lane_totals)
         recording = QHBoxLayout()
@@ -194,7 +195,7 @@ class MainWindow(QMainWindow):
         self.lane_name.editingFinished.connect(self.rename_lane)
         lanes_layout.addWidget(self.lane_name)
         self._button('選択レーンの色…', self.choose_lane_color, lanes_layout)
-        lanes_hint = QLabel('各レーンの四隅を独立して補正・確定します。\n隣のレーンは連動しません。レーン間に空白を残せます。\n空白は解析・人数集計の対象外です。重なりは指定できません。\n均等分割は手動初期配置であり、AI検出ではありません。')
+        lanes_hint = QLabel('各レーンの四隅を独立して補正・確定します。\n隣のレーンは連動しません。レーン間に空白を残せます。\n空白から新規追跡は始めません。既存対象はミドルパート内で追跡します。\n重なりは指定できません。均等分割は手動初期配置です。')
         lanes_hint.setWordWrap(True)
         lanes_layout.addWidget(lanes_hint)
         self.lanes_state = QLabel('未設定')
@@ -253,7 +254,7 @@ class MainWindow(QMainWindow):
         footer.addWidget(self.analyze_button)
         root.addLayout(footer)
         self.setCentralWidget(central)
-        for shortcut, slot in [(QKeySequence.Save, self.save), (QKeySequence.Undo, self.undo)]:
+        for shortcut, slot in [(QKeySequence.Save, self.save_as), (QKeySequence.Undo, self.undo)]:
             action = QAction(self)
             action.setShortcut(shortcut)
             action.triggered.connect(slot)
@@ -403,7 +404,7 @@ class MainWindow(QMainWindow):
         panel = self.analysis_panel
         if panel.review_analysis_id and frame.source_id == self.request_id:
             self.view.analysis_tracks = [r for r in AnalysisRepository(self.database).tracks_at(panel.review_analysis_id,frame.index)
-                                         if in_course(self.workflow.calibration,r['point'])]
+                                         if visible_track(self.workflow.calibration,r)]
             self.update_analysis_events(panel.data.get('runs',[]) if panel.data else [],frame.timestamp_ms)
             self.view.redraw()
             self.course_map.update_course(self.workflow.calibration,self.landmarks_panel.selected,self.view.analysis_tracks)
@@ -548,6 +549,7 @@ class MainWindow(QMainWindow):
         self.course_map.update_course(c,self.landmarks_panel.selected,self.view.analysis_tracks)
         self.refresh_state()
         self.source_button.setEnabled(not self.analysis_active)
+        self.save_as_button.setEnabled(not self.analysis_active)
         self.rotation.setEnabled(not self.analysis_active)
         self.mirror.setEnabled(not self.analysis_active)
         self.start_time.setEnabled(not self.analysis_active and not live)
@@ -746,6 +748,30 @@ class MainWindow(QMainWindow):
                 self.on_frame(self.current_frame)
             self.refresh()
 
+    def save_as(self):
+        if self.analysis_active:
+            self.notice.setText('分析停止後に名前を付けて設定を保存してください。')
+            return False
+        stem=Path(self.workflow.calibration.source.get('path','course')).stem or 'course'
+        suggested=self.database.parent/f'{stem}_設定_{datetime.now():%Y%m%d_%H%M%S_%f}.sqlite'
+        path,_=QFileDialog.getSaveFileName(self,'設定に名前を付けて保存',str(suggested),'SQLite設定 (*.sqlite *.db)')
+        if not path:return False
+        target=Path(path)
+        if target.suffix.lower() not in ('.sqlite','.db'):target=target.with_suffix('.sqlite')
+        if target.resolve()==self.database.resolve():return self.save()
+        try:
+            target.parent.mkdir(parents=True,exist_ok=True)
+            session=EventRepository(target).save(self.workflow.calibration,history=self.workflow.journal)
+        except Exception as exc:
+            QMessageBox.warning(self,'保存できません',str(exc));return False
+        self.database=target;self.session_id=session
+        self.setWindowTitle('Mogul Course Analyzer 1.8 — '+target.stem)
+        self.workflow.journal.clear();self.workflow.dirty=False
+        self.analysis_panel.reset_result();self.analysis_panel.refresh_history()
+        self.notice.setText('名前付き設定を保存しました: '+str(target.resolve()))
+        self.refresh_state()
+        return True
+
     def save(self):
         self.view.click_timer.stop()
         try:
@@ -776,6 +802,7 @@ class MainWindow(QMainWindow):
         try:
             session_id, calibration = EventRepository(path).load()
             self.database = Path(path)
+            self.setWindowTitle('Mogul Course Analyzer 1.8 — '+Path(path).stem)
             self.session_id = session_id
             self.workflow.calibration = calibration
             self.workflow.history.clear()

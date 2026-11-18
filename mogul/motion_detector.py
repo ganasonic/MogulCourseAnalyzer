@@ -24,7 +24,7 @@ class MotionDetector:
         reset=False
         if self.previous_small is not None and gray.shape==self.previous_small.shape:
             mask=np.full_like(gray,255)
-            for polygon in region.guards:
+            for polygon in region.observation_polygons:
                 cv2.fillPoly(mask,[np.rint(np.asarray(polygon)*[gray.shape[1],gray.shape[0]]).astype(np.int32)],0)
             points=cv2.goodFeaturesToTrack(self.previous_small,180,.03,8,mask=mask)
             if points is not None and len(points)>=12:
@@ -62,7 +62,7 @@ class MotionDetector:
         valid=cv2.warpAffine(np.ones((h,w),np.uint8),local,(w,h),flags=cv2.INTER_NEAREST)
         valid=cv2.erode(valid,np.ones((3,3),np.uint8),borderType=cv2.BORDER_CONSTANT,borderValue=0)
         mask=np.zeros((h,w),np.uint8)
-        for polygon in region.guards:
+        for polygon in region.observation_polygons:
             cv2.fillPoly(mask,[np.rint(np.asarray(polygon)*[iw,ih]-[x0,y0]).astype(np.int32)],255)
         allowed=(mask>0)&(valid>0)
         if not allowed.any():
@@ -93,6 +93,8 @@ class MotionDetector:
             lane=next((i for i,p in enumerate(region.polygons) if cv2.pointPolygonTest(np.asarray(p,np.float32),tuple(point),False)>=0),None)
             if lane is None:
                 lane=next((i for i,p in enumerate(region.guards) if cv2.pointPolygonTest(np.asarray(p,np.float32),tuple(point),False)>=0),None)
+            if lane is None and region.tracking_contains(point):
+                lane=min(range(len(region.polygons)),key=lambda i:np.linalg.norm(np.mean(region.polygons[i],axis=0)-point))
             if lane is None:
                 continue
             lane_width=np.ptp(np.asarray(region.polygons[lane])[:,0])*iw
